@@ -661,7 +661,7 @@ function Scan-ArchiveForIndicators {
         }
     } catch {
         $script:ReadErrors++
-        Write-Log 'WARN' "Не удалось открыть архив $ArchivePath: $($_.Exception.Message)"
+        Write-Log 'WARN' "Не удалось открыть архив ${ArchivePath}: $($_.Exception.Message)"
     } finally {
         if ($zip) { $zip.Dispose() }
     }
