@@ -1,1036 +1,638 @@
 #Requires -Version 5.1
 <#
-YRYS CHECKER - autonomous local anti-cheat risk scanner for Windows / Minecraft.
-No permanent reports. Temporary working files are deleted on normal exit and by a cleanup watcher after the console closes.
-
-Design goals:
-- Fast candidate discovery across the system.
-- Strict scoring instead of noisy red spam.
-- Checks EXE / DLL / JAR linked to cheat software.
-- Local "AI-like" expert risk engine. No internet, no cloud, no upload.
+ YRYS CHECKER POWER v6.1
+ Smart local cheat checker for Windows / Minecraft.
+ No permanent report files. Temp files are removed on exit.
+ Compatible with old flags: -OnlyMinecraft and -OpenReport.
 #>
 
 [CmdletBinding()]
 param(
-    [string[]]$Cheat,
-    [switch]$Deep,
-    [switch]$Fast,
+    [string]$Cheat = "",
     [switch]$NoPrompt,
-    [int]$MaxMinutes = 10,
-    [int]$MaxFileSizeMB = 120,
-    [int]$MaxStringScanMB = 24,
-    [int]$Top = 40
+    [switch]$Fast,
+    [switch]$Deep,
+    [switch]$OnlyMinecraft,
+    [switch]$OpenReport,
+    [int]$MaxMinutes = 12,
+    [int]$MaxCandidates = 650,
+    [switch]$KeepTemp
 )
 
 Set-StrictMode -Version 2.0
-$ErrorActionPreference = "SilentlyContinue"
-
-$script:Version = "6.0.0"
+$ErrorActionPreference = 'SilentlyContinue'
+$script:Version = '6.1.0'
 $script:StartedAt = Get-Date
-$script:Deadline = $script:StartedAt.AddMinutes([Math]::Max(1, $MaxMinutes))
-$script:RunId = [Guid]::NewGuid().ToString("N")
-$script:TempRoot = Join-Path $env:TEMP ("YRYS_CHECKER_" + $script:RunId)
-$script:CacheFile = Join-Path $script:TempRoot "runtime.cache"
+$script:Deadline = (Get-Date).AddMinutes([Math]::Max(2, $MaxMinutes))
+$script:TempRoot = Join-Path $env:TEMP ("YRYS_CHECKER_" + ([guid]::NewGuid().ToString('N')))
 $script:Findings = New-Object System.Collections.ArrayList
-$script:Candidates = @{}
-$script:SeenFinding = @{}
-$script:Stats = [pscustomobject]@{
-    Processes = 0
-    Modules = 0
-    FilesSeen = 0
-    Candidates = 0
-    FilesAnalyzed = 0
-    JarScanned = 0
-    PeScanned = 0
-    Errors = 0
-    TimedOut = $false
-}
+$script:Seen = @{}
+$script:InputTokens = @()
+$script:AllTokens = @()
 
-New-Item -ItemType Directory -Path $script:TempRoot -Force | Out-Null
-
-function Start-TempCleanupWatcher {
-    param([string]$Target, [int]$ParentPid)
-    try {
-        $cleanup = Join-Path $Target "cleanup.ps1"
-        $lines = @()
-        $lines += "param([int]`$ParentPid,[string]`$Target)"
-        $lines += "`$ErrorActionPreference = 'SilentlyContinue'"
-        $lines += "while (`$true) {"
-        $lines += "    `$p = Get-Process -Id `$ParentPid -ErrorAction SilentlyContinue"
-        $lines += "    if (-not `$p) { break }"
-        $lines += "    Start-Sleep -Seconds 2"
-        $lines += "}"
-        $lines += "Start-Sleep -Seconds 1"
-        $lines += "Remove-Item -LiteralPath `$Target -Recurse -Force -ErrorAction SilentlyContinue"
-        Set-Content -Path $cleanup -Value $lines -Encoding UTF8
-        $args = "-NoProfile -ExecutionPolicy Bypass -File `"$cleanup`" -ParentPid $ParentPid -Target `"$Target`""
-        Start-Process -FilePath "powershell.exe" -ArgumentList $args -WindowStyle Hidden | Out-Null
-    } catch {}
-}
-
-function Remove-TempNow {
-    try {
-        Remove-Item -LiteralPath $script:TempRoot -Recurse -Force -ErrorAction SilentlyContinue
-    } catch {}
-}
-
-Start-TempCleanupWatcher -Target $script:TempRoot -ParentPid $PID
-Register-EngineEvent PowerShell.Exiting -Action {
-    try {
-        Remove-Item -LiteralPath $event.MessageData -Recurse -Force -ErrorAction SilentlyContinue
-    } catch {}
-} -MessageData $script:TempRoot | Out-Null
-
-function Test-TimeLeft {
-    if ((Get-Date) -gt $script:Deadline) {
-        $script:Stats.TimedOut = $true
-        return $false
+function New-WorkDir {
+    if (-not (Test-Path $script:TempRoot)) {
+        New-Item -ItemType Directory -Path $script:TempRoot -Force | Out-Null
     }
-    return $true
 }
 
-function Write-Centered {
-    param([string]$Text, [ConsoleColor]$Color = "White")
+function Remove-WorkDir {
+    if ($KeepTemp) { return }
     try {
-        $w = [Console]::WindowWidth
-        if ($w -lt 20) { $w = 100 }
-        $pad = [Math]::Max(0, [int](($w - $Text.Length) / 2))
-        Write-Host ((" " * $pad) + $Text) -ForegroundColor $Color
+        if (Test-Path $script:TempRoot) {
+            Remove-Item -LiteralPath $script:TempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    } catch { }
+}
+
+function Test-Admin {
+    try {
+        $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $p = New-Object Security.Principal.WindowsPrincipal($id)
+        return $p.IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)
+    } catch { return $false }
+}
+
+function Write-Line {
+    param(
+        [string]$Text = '',
+        [ConsoleColor]$Color = [ConsoleColor]::Gray,
+        [ConsoleColor]$Back = [ConsoleColor]::Black
+    )
+    try {
+        if ($Back -eq [ConsoleColor]::Black) {
+            Write-Host $Text -ForegroundColor $Color
+        } else {
+            Write-Host $Text -ForegroundColor $Color -BackgroundColor $Back
+        }
     } catch {
-        Write-Host $Text -ForegroundColor $Color
+        Write-Host $Text
+    }
+}
+
+function Write-Status {
+    param([string]$Kind, [string]$Text)
+    switch ($Kind.ToUpperInvariant()) {
+        'STEP' { Write-Line ("  > " + $Text) Cyan }
+        'OK'   { Write-Line ("  + " + $Text) Green }
+        'WARN' { Write-Line ("  ! " + $Text) Yellow }
+        'BAD'  { Write-Line ("  X " + $Text) Red }
+        'HIT'  { Write-Line ("  !!! " + $Text) Red DarkGray }
+        default { Write-Line ("    " + $Text) Gray }
     }
 }
 
 function Show-Banner {
     Clear-Host
-    try { [Console]::Title = "YRYS CHECKER v$script:Version - local risk scanner" } catch {}
-    $banner = @(
-"YYYY   YYYY RRRRRR   YYYY   YYYY  SSSSS        CCCCC  HH   HH EEEEEEE  CCCCC  KK  KK EEEEEEE RRRRRR ",
-" YYYY YYYY  RR   RR   YYYY YYYY  SS   SS      CC    C HH   HH EE      CC    C KK KK  EE      RR   RR",
-"   YYYYY    RRRRRR      YYYYY     SSSSS       CC      HHHHHHH EEEEE   CC      KKK    EEEEE   RRRRRR ",
-"    YYY     RR  RR       YYY         SS       CC    C HH   HH EE      CC    C KK KK  EE      RR  RR ",
-"    YYY     RR   RR      YYY     SSSSS         CCCCC  HH   HH EEEEEEE  CCCCC  KK  KK EEEEEEE RR   RR"
-    )
-    Write-Host ""
-    foreach ($l in $banner) { Write-Centered $l Red }
-    Write-Centered ("v" + $script:Version + " | STRICT LOCAL SCAN | NO PERMANENT REPORTS") DarkRed
-    Write-Host ""
+    Write-Line '' DarkRed
+    Write-Line ' __   __ ____  __   __ ____     ____ _   _ _____ ____ _  _______ ____  ' Red
+    Write-Line ' \ \ / /|  _ \ \ \ / / ___|   / ___| | | | ____/ ___| |/ / ____|  _ \ ' Red
+    Write-Line '  \ V / | |_) | \ V /\___ \  | |   | |_| |  _|| |   | '' /|  _| | |_) |' Red
+    Write-Line '   | |  |  _ <   | |  ___) | | |___|  _  | |__| |___| . \| |___|  _ < ' Red
+    Write-Line '   |_|  |_| \_\  |_| |____/   \____|_| |_|_____\____|_|\_\_____|_| \_\' Red
+    Write-Line '' DarkRed
+    Write-Line ('  POWER v' + $script:Version + ' | smart local scan | no permanent reports') DarkRed
+    Write-Line ('  Temp workspace: ' + $script:TempRoot) DarkGray
+    Write-Line '' DarkRed
 }
 
-function Write-Step {
+function Split-Tokens {
     param([string]$Text)
-    Write-Host ("  > " + $Text) -ForegroundColor Cyan
-}
-
-function Write-Soft {
-    param([string]$Text)
-    Write-Host ("    " + $Text) -ForegroundColor DarkGray
-}
-
-function Write-Status {
-    param([string]$Label, [string]$Value, [ConsoleColor]$Color = "White")
-    Write-Host ("  {0,-18} " -f $Label) -NoNewline -ForegroundColor DarkGray
-    Write-Host $Value -ForegroundColor $Color
-}
-
-function Normalize-Token {
-    param([string]$Text)
-    if ([string]::IsNullOrWhiteSpace($Text)) { return "" }
-    return ($Text.Trim().ToLowerInvariant() -replace '[^a-z0-9_\-\. ]','')
-}
-
-function Split-UserCheats {
-    param([string[]]$InputItems)
-    $out = New-Object System.Collections.ArrayList
-    foreach ($item in @($InputItems)) {
-        if ([string]::IsNullOrWhiteSpace($item)) { continue }
-        foreach ($x in ($item -split '[,;|]+')) {
-            $n = Normalize-Token $x
-            if ($n.Length -ge 2) { [void]$out.Add($n) }
-        }
-    }
-    return @($out | Select-Object -Unique)
-}
-
-function Read-CheatInput {
-    param([string[]]$Current)
-    $given = Split-UserCheats $Current
-    if ($given.Count -gt 0 -or $NoPrompt) { return $given }
-
-    Write-Host "Enter possible cheat names separated by comma. Press Enter to use built-in database only." -ForegroundColor Yellow
-    Write-Host "Example: vape, raven, rise, drip, entropy, autoclicker" -ForegroundColor DarkGray
-    $line = Read-Host "Possible cheats"
-    return (Split-UserCheats @($line))
-}
-
-$script:UserCheats = Read-CheatInput -Current $Cheat
-
-$script:BuiltInCheats = @(
-    "vape","vape v4","raven","raven b","raven b+","rise","rise client","liquidbounce","wurst","aristois",
-    "sigma","sigma5","zeroday","breez","breeze","ares","impact","inertia","phobos","rusherhack","future",
-    "astolfo","novoline","moon","tenacity","zeroday","bleachhack","meteor","kami","salhack","kami blue",
-    "coffee","drip","drip lite","entropy","whiteout","ape","ape v4","dream","dope","koid","skilled",
-    "tap","echo","slapp","karma","prestige","slinky","exire","karma.rip","autoclicker","auto clicker",
-    "ghost client","ghostclient","external client","injector","minecraft cheat","reach display"
-)
-
-$script:StrongTerms = @(
-    "killaura","kill aura","aimassist","aim assist","triggerbot","trigger bot","autoclicker","auto clicker",
-    "reach","velocity","scaffold","xray","x-ray","esp","tracers","nofall","no fall","flyhack","speedhack",
-    "timerhack","bhop","blink","cheststealer","invcleaner","clickgui","click gui","modulemanager",
-    "combatmodule","renderhack","packetfly","crasher","dupe","javaagent","mixintransformer"
-)
-
-$script:WeakTerms = @(
-    "fly","speed","timer","blink","velocity","module","client","hack","cheat","inject","injection",
-    "loader","bypass","mapper","clicker","aim","assist","legit","silent","arraylist"
-)
-
-$script:LegitVendors = @(
-    "microsoft","microsoft corporation","oracle","oracle america","eclipse adoptium","adoptium","mojang",
-    "nvidia","intel","amd","advanced micro devices","google","valve","discord","spotify","badlion",
-    "lunar client","feather","labymod","curseforge","overwolf","modrinth","prismlauncher","multimc"
-)
-
-$script:LegitFileHints = @(
-    "\windows\system32\","\windows\syswow64\","\windows\servicing\","\windows\winsxs\",
-    "\program files\java\","\program files\eclipse adoptium\","\program files\microsoft\",
-    "\program files (x86)\microsoft\","\lunar client\","\badlion client\","\curseforge\",
-    "\prismlauncher\","\multimc\","\modrinth\"
-)
-
-$allKeywords = @()
-$allKeywords += $script:BuiltInCheats
-$allKeywords += $script:StrongTerms
-$allKeywords += $script:UserCheats
-$allKeywords = @($allKeywords | Where-Object { $_ -and $_.Trim().Length -ge 2 } | Select-Object -Unique)
-
-function New-WordRegex {
-    param([string[]]$Words)
-    $escaped = New-Object System.Collections.ArrayList
-    foreach ($w in @($Words)) {
-        $n = Normalize-Token $w
-        if ($n.Length -lt 2) { continue }
-        [void]$escaped.Add([Regex]::Escape($n))
-    }
-    if ($escaped.Count -eq 0) {
-        return New-Object Regex "a^", ([System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
-    }
-    $pat = ($escaped | Sort-Object Length -Descending) -join "|"
-    return New-Object Regex $pat, ([System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
-}
-
-$script:KeywordRegex = New-WordRegex -Words $allKeywords
-$script:StrongRegex = New-WordRegex -Words $script:StrongTerms
-$script:WeakRegex = New-WordRegex -Words $script:WeakTerms
-$script:UserRegex = New-WordRegex -Words $script:UserCheats
-
-function Get-TextMatches {
-    param(
-        [string]$Text,
-        [string[]]$Terms,
-        [int]$Limit = 12
-    )
-    $res = New-Object System.Collections.ArrayList
+    $items = New-Object System.Collections.ArrayList
     if ([string]::IsNullOrWhiteSpace($Text)) { return @() }
-    $t = $Text.ToLowerInvariant()
-    foreach ($term in @($Terms)) {
-        if ([string]::IsNullOrWhiteSpace($term)) { continue }
-        $n = Normalize-Token $term
-        if ($n.Length -lt 2) { continue }
-        if ($t.Contains($n)) {
-            [void]$res.Add($n)
-            if ($res.Count -ge $Limit) { break }
-        }
+    foreach ($raw in ($Text -split '[,;\s]+')) {
+        $t = $raw.Trim().ToLowerInvariant()
+        if ($t.Length -ge 3 -and -not $items.Contains($t)) { [void]$items.Add($t) }
     }
-    return @($res | Select-Object -Unique)
+    return $items.ToArray()
 }
 
-function Test-LegitPath {
-    param([string]$Path)
-    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
-    $p = $Path.ToLowerInvariant()
-    foreach ($hint in $script:LegitFileHints) {
-        if ($p.Contains($hint)) { return $true }
-    }
-    return $false
-}
-
-function Test-ExcludedDirectory {
-    param([string]$Path)
-    if ([string]::IsNullOrWhiteSpace($Path)) { return $true }
-    $p = $Path.ToLowerInvariant().TrimEnd('\')
-    $bad = @(
-        "\windows\winsxs",
-        "\windows\servicing",
-        "\windows\softwaredistribution",
-        "\windows\installer",
-        "\windows\assembly",
-        "\windows\system32\driverstore",
-        "\system volume information",
-        "\$recycle.bin",
-        "\recovery",
-        "\program files\windowsapps",
-        "\programdata\microsoft\windows defender",
-        "\programdata\microsoft\windows\wer"
+function Initialize-Tokens {
+    $default = @(
+        'vape','raven','rise','drip','entropy','karma','akira','breeze','dream','doomsday',
+        'augustus','novoline','zeroday','tenacity','astolfo','sigma','wurst','liquidbounce',
+        'meteor','impact','aristois','inertia','future','rusherhack','phobos','pyro','abyss',
+        'bleachhack','huzuni','wolfram','jigsaw','ares','reach','velocity','killaura','aimassist',
+        'autoclicker','clicker','triggerbot','scaffold','xray','esp','nofall','bhop','blink','timer',
+        'injector','loader','crack','bypass','ghostclient','clientmod','selfdestruct','clickgui'
     )
-    foreach ($b in $bad) {
-        if ($p.Contains($b)) { return $true }
+
+    if (-not $NoPrompt -and [string]::IsNullOrWhiteSpace($Cheat)) {
+        Write-Line 'Enter possible cheat names/keywords separated by comma.' Yellow
+        Write-Line 'Example: vape, raven, rise, drip, entropy' DarkGray
+        $Cheat = Read-Host 'Cheats'
     }
-    return $false
+
+    $script:InputTokens = Split-Tokens $Cheat
+    $merged = New-Object System.Collections.ArrayList
+    foreach ($t in @($script:InputTokens + $default)) {
+        $v = [string]$t
+        if ($v.Length -ge 3 -and -not $merged.Contains($v)) { [void]$merged.Add($v) }
+    }
+    $script:AllTokens = @($merged)
+
+    if ($script:InputTokens.Count -gt 0) {
+        Write-Status 'OK' ('Priority keywords: ' + ($script:InputTokens -join ', '))
+    } else {
+        Write-Status 'WARN' 'No custom keywords entered. Built-in cheat dictionary will be used.'
+    }
 }
 
-function Add-Candidate {
-    param(
-        [string]$Path,
-        [string]$Source,
-        [int]$Boost = 0
-    )
-    if ([string]::IsNullOrWhiteSpace($Path)) { return }
-    try {
-        $full = [System.IO.Path]::GetFullPath($Path)
-    } catch {
-        $full = $Path
-    }
-    $key = $full.ToLowerInvariant()
-    if (-not $script:Candidates.ContainsKey($key)) {
-        $script:Candidates[$key] = [ordered]@{
-            Path = $full
-            Sources = New-Object System.Collections.ArrayList
-            Boost = 0
-        }
-    }
-    if ($Source) {
-        if (-not ($script:Candidates[$key].Sources -contains $Source)) {
-            [void]$script:Candidates[$key].Sources.Add($Source)
-        }
-    }
-    $script:Candidates[$key].Boost += $Boost
+function Test-Expired {
+    return ((Get-Date) -gt $script:Deadline)
 }
 
 function Add-Finding {
     param(
         [string]$Kind,
-        [string]$Target,
+        [string]$Path,
         [int]$Score,
-        [string[]]$Evidence,
-        [string]$Source = ""
+        [string[]]$Reasons,
+        [string]$Extra = ''
     )
-    if ([string]::IsNullOrWhiteSpace($Target)) { return }
-    $e = @($Evidence | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
-    if ($Score -lt 45) { return }
-
-    $sev = "WATCH"
-    if ($Score -ge 90) { $sev = "CRITICAL" }
-    elseif ($Score -ge 75) { $sev = "HIGH" }
-    elseif ($Score -ge 60) { $sev = "MEDIUM" }
-
-    $hashKey = ($Kind + "|" + $Target + "|" + ($e -join ";")).ToLowerInvariant()
-    if ($script:SeenFinding.ContainsKey($hashKey)) { return }
-    $script:SeenFinding[$hashKey] = $true
-
+    if ([string]::IsNullOrWhiteSpace($Path)) { $Path = '<unknown>' }
+    $key = ($Kind + '|' + $Path).ToLowerInvariant()
+    if ($script:Seen.ContainsKey($key)) {
+        $old = $script:Seen[$key]
+        if ($Score -gt $old.Score) { $old.Score = $Score }
+        foreach ($r in $Reasons) { if ($old.Reasons -notcontains $r) { $old.Reasons += $r } }
+        return
+    }
+    $sev = 'LOW'
+    if ($Score -ge 85) { $sev = 'CRITICAL' }
+    elseif ($Score -ge 65) { $sev = 'HIGH' }
+    elseif ($Score -ge 42) { $sev = 'MEDIUM' }
     $obj = [pscustomobject]@{
-        Severity = $sev
-        Score = [Math]::Min(99, [Math]::Max(0, $Score))
         Kind = $Kind
-        Target = $Target
-        Evidence = ($e -join " | ")
-        Source = $Source
+        Path = $Path
+        Score = $Score
+        Severity = $sev
+        Reasons = @($Reasons)
+        Extra = $Extra
     }
     [void]$script:Findings.Add($obj)
+    $script:Seen[$key] = $obj
 }
 
-function Get-AuthenticodeInfo {
+function Normalize-PathSafe {
     param([string]$Path)
-    $info = [ordered]@{
-        Status = "Unknown"
-        Signer = ""
-        Trusted = $false
-    }
-    try {
-        $sig = Get-AuthenticodeSignature -FilePath $Path -ErrorAction SilentlyContinue
-        if ($sig) {
-            $info.Status = [string]$sig.Status
-            if ($sig.SignerCertificate) {
-                $info.Signer = [string]$sig.SignerCertificate.Subject
-                $s = $info.Signer.ToLowerInvariant()
-                foreach ($v in $script:LegitVendors) {
-                    if ($s.Contains($v)) { $info.Trusted = $true; break }
-                }
-            }
-        }
-    } catch {}
-    return $info
+    try { return [System.IO.Path]::GetFullPath($Path) } catch { return $Path }
 }
 
-function Read-FileTextSample {
-    param([string]$Path, [int]$MaxMB)
-    try {
-        $fi = Get-Item -LiteralPath $Path -ErrorAction Stop
-        if ($fi.Length -le 0) { return "" }
-        $limit = [Math]::Min([int64]($MaxMB * 1MB), [int64]$fi.Length)
-        $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
-        try {
-            $buf = New-Object byte[] $limit
-            $read = $fs.Read($buf, 0, $buf.Length)
-            if ($read -le 0) { return "" }
-            $ascii = [System.Text.Encoding]::ASCII.GetString($buf, 0, $read)
-            return $ascii
-        } finally {
-            $fs.Close()
-        }
-    } catch {
-        $script:Stats.Errors++
-        return ""
+function Test-TextHasToken {
+    param([string]$Text, [string[]]$Tokens)
+    if ([string]::IsNullOrEmpty($Text)) { return @() }
+    $lower = $Text.ToLowerInvariant()
+    $hits = New-Object System.Collections.ArrayList
+    foreach ($t in $Tokens) {
+        if ($t.Length -ge 3 -and $lower.Contains($t)) { [void]$hits.Add($t) }
     }
+    return @($hits | Select-Object -Unique)
 }
 
-function Scan-JarLight {
-    param([string]$Path)
-    $result = [ordered]@{
-        Strong = @()
-        Weak = @()
-        Entries = 0
-        Error = $false
-    }
-    try {
-        Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
-        $zip = [System.IO.Compression.ZipFile]::OpenRead($Path)
-        try {
-            $maxEntries = 520
-            foreach ($entry in $zip.Entries) {
-                if (-not (Test-TimeLeft)) { break }
-                $result.Entries++
-                if ($result.Entries -gt $maxEntries) { break }
-                if ($entry.Length -gt ([int64]$MaxStringScanMB * 1MB)) { continue }
-                $name = $entry.FullName.ToLowerInvariant()
-
-                $nameStrong = Get-TextMatches -Text $name -Terms $script:StrongTerms -Limit 8
-                $nameWeak = Get-TextMatches -Text $name -Terms $script:WeakTerms -Limit 8
-                if ($nameStrong.Count -gt 0) { $result.Strong += $nameStrong }
-                if ($nameWeak.Count -gt 0) { $result.Weak += $nameWeak }
-
-                if ($entry.Length -le 0) { continue }
-                if ($entry.Length -gt 1048576) { continue }
-                if ($name -notmatch '\.(class|json|txt|cfg|properties|mf|yml|yaml|xml)$' -and -not $name.Contains("meta-inf")) { continue }
-
-                try {
-                    $stream = $entry.Open()
-                    try {
-                        $reader = New-Object System.IO.StreamReader($stream, [System.Text.Encoding]::ASCII, $true, 8192)
-                        $content = $reader.ReadToEnd()
-                        $reader.Close()
-                    } finally {
-                        $stream.Close()
-                    }
-                    $strong = Get-TextMatches -Text $content -Terms $script:StrongTerms -Limit 20
-                    $weak = Get-TextMatches -Text $content -Terms $script:WeakTerms -Limit 20
-                    if ($strong.Count -gt 0) { $result.Strong += $strong }
-                    if ($weak.Count -gt 0) { $result.Weak += $weak }
-                } catch {}
-            }
-        } finally {
-            $zip.Dispose()
-        }
-    } catch {
-        $result.Error = $true
-        $script:Stats.Errors++
-    }
-    $result.Strong = @($result.Strong | Select-Object -Unique)
-    $result.Weak = @($result.Weak | Select-Object -Unique)
-    return $result
-}
-
-function Invoke-YrysAiRisk {
-    param(
-        [string]$Path,
-        [string]$Kind,
-        [string[]]$Sources,
-        [int]$Boost = 0
+function Get-MinecraftRoots {
+    $roots = New-Object System.Collections.ArrayList
+    $candidates = @(
+        (Join-Path $env:APPDATA '.minecraft'),
+        (Join-Path $env:APPDATA '.tlauncher'),
+        (Join-Path $env:APPDATA '.feather'),
+        (Join-Path $env:APPDATA '.lunarclient'),
+        (Join-Path $env:LOCALAPPDATA 'Packages'),
+        (Join-Path $env:LOCALAPPDATA 'Programs'),
+        (Join-Path $env:USERPROFILE 'Downloads'),
+        (Join-Path $env:USERPROFILE 'Desktop')
     )
-
-    $evidence = New-Object System.Collections.ArrayList
-    $score = 0
-    $lower = $Path.ToLowerInvariant()
-    $fileName = ""
-    try { $fileName = [System.IO.Path]::GetFileName($Path).ToLowerInvariant() } catch {}
-
-    if ($Boost -gt 0) {
-        $score += $Boost
-        [void]$evidence.Add("context boost +" + $Boost)
+    foreach ($r in $candidates) {
+        if ($r -and (Test-Path $r) -and -not $roots.Contains($r)) { [void]$roots.Add($r) }
     }
-
-    if ($Sources -contains "running-process") {
-        $score += 25
-        [void]$evidence.Add("currently running")
-    }
-    if ($Sources -contains "java-commandline") {
-        $score += 25
-        [void]$evidence.Add("linked from Java/Minecraft command line")
-    }
-    if ($Sources -contains "loaded-module") {
-        $score += 18
-        [void]$evidence.Add("loaded module in process")
-    }
-    if ($Sources -contains "startup") {
-        $score += 20
-        [void]$evidence.Add("startup persistence")
-    }
-    if ($Sources -contains "scheduled-task") {
-        $score += 20
-        [void]$evidence.Add("scheduled task persistence")
-    }
-
-    $userMatches = Get-TextMatches -Text $lower -Terms $script:UserCheats -Limit 10
-    if ($userMatches.Count -gt 0) {
-        $score += 55
-        [void]$evidence.Add("matches user cheat input: " + ($userMatches -join ","))
-    }
-
-    $builtMatches = Get-TextMatches -Text $lower -Terms $script:BuiltInCheats -Limit 10
-    if ($builtMatches.Count -gt 0) {
-        $score += 45
-        [void]$evidence.Add("known cheat name in path/name: " + ($builtMatches -join ","))
-    }
-
-    $strongName = Get-TextMatches -Text $fileName -Terms $script:StrongTerms -Limit 10
-    if ($strongName.Count -gt 0) {
-        $score += 25
-        [void]$evidence.Add("strong cheat words in file name: " + ($strongName -join ","))
-    }
-
-    if ($lower.Contains("\.minecraft\") -or $lower.Contains("\minecraft\") -or $lower.Contains("\tlauncher\") -or $lower.Contains("\lunarclient\")) {
-        $score += 8
-        [void]$evidence.Add("minecraft-related path")
-    }
-
-    $ext = ""
-    try { $ext = [System.IO.Path]::GetExtension($Path).ToLowerInvariant() } catch {}
-
-    if ($ext -eq ".jar") {
-        $script:Stats.JarScanned++
-        $jar = Scan-JarLight -Path $Path
-        if ($jar.Strong.Count -ge 5) {
-            $score += 55
-            [void]$evidence.Add("many strong JAR cheat strings: " + (($jar.Strong | Select-Object -First 10) -join ","))
-        } elseif ($jar.Strong.Count -ge 2) {
-            $score += 35
-            [void]$evidence.Add("strong JAR cheat strings: " + (($jar.Strong | Select-Object -First 8) -join ","))
-        } elseif ($jar.Strong.Count -eq 1) {
-            $score += 18
-            [void]$evidence.Add("one strong JAR string: " + ($jar.Strong[0]))
-        }
-
-        if ($jar.Weak.Count -ge 6) {
-            $score += 15
-            [void]$evidence.Add("weak JAR indicators: " + (($jar.Weak | Select-Object -First 8) -join ","))
-        }
-
-        if ($jar.Error) {
-            [void]$evidence.Add("JAR could not be parsed")
-        }
-    } elseif ($ext -eq ".exe" -or $ext -eq ".dll") {
-        $script:Stats.PeScanned++
-        $sig = Get-AuthenticodeInfo -Path $Path
-        if ($sig.Trusted -and (Test-LegitPath -Path $Path) -and $score -lt 80) {
-            $score -= 30
-            [void]$evidence.Add("trusted vendor signature: " + $sig.Signer)
-        } elseif ($sig.Status -ne "Valid") {
-            if ($score -ge 30) {
-                $score += 15
-                [void]$evidence.Add("not valid signed: " + $sig.Status)
-            } else {
-                [void]$evidence.Add("signature: " + $sig.Status)
-            }
-        } else {
-            [void]$evidence.Add("signature valid but not whitelisted")
-        }
-
-        if ($score -ge 30 -or $Sources -contains "running-process" -or $Sources -contains "loaded-module") {
-            $sample = Read-FileTextSample -Path $Path -MaxMB $MaxStringScanMB
-            $strong = Get-TextMatches -Text $sample -Terms $script:StrongTerms -Limit 15
-            $built = Get-TextMatches -Text $sample -Terms $script:BuiltInCheats -Limit 12
-            $user = Get-TextMatches -Text $sample -Terms $script:UserCheats -Limit 12
-
-            if ($user.Count -gt 0) {
-                $score += 35
-                [void]$evidence.Add("user cheat strings inside binary: " + ($user -join ","))
-            }
-            if ($built.Count -gt 0) {
-                $score += 28
-                [void]$evidence.Add("known cheat strings inside binary: " + (($built | Select-Object -First 8) -join ","))
-            }
-            if ($strong.Count -ge 3) {
-                $score += 25
-                [void]$evidence.Add("strong cheat strings inside binary: " + (($strong | Select-Object -First 8) -join ","))
-            } elseif ($strong.Count -gt 0) {
-                $score += 12
-                [void]$evidence.Add("some strong binary strings: " + (($strong | Select-Object -First 5) -join ","))
-            }
-        }
-    }
-
-    if ($lower.Contains("\temp\") -or $lower.Contains("\appdata\local\temp\") -or $lower.Contains("\downloads\")) {
-        if ($score -ge 35) {
-            $score += 8
-            [void]$evidence.Add("risky user/temp/download path")
-        }
-    }
-
-    if ((Test-LegitPath -Path $Path) -and $score -lt 75) {
-        $score -= 20
-        [void]$evidence.Add("legit path damping")
-    }
-
-    if ($score -lt 0) { $score = 0 }
-    return [pscustomobject]@{
-        Score = [int][Math]::Min(99, $score)
-        Evidence = @($evidence | Select-Object -Unique)
-    }
-}
-
-function Scan-Processes {
-    Write-Step "Scanning running processes and command lines..."
-    $procs = @()
-    try {
-        $procs = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue
-    } catch {
-        $procs = @()
-        $script:Stats.Errors++
-    }
-
-    foreach ($p in @($procs)) {
-        if (-not (Test-TimeLeft)) { break }
-        $script:Stats.Processes++
-        $text = (($p.Name + " " + $p.ExecutablePath + " " + $p.CommandLine) -as [string])
-        if ([string]::IsNullOrWhiteSpace($text)) { continue }
-
-        $matched = $script:KeywordRegex.IsMatch($text)
-        $javaLike = ($p.Name -match 'java|javaw|minecraft|launcher') -or ($text -match 'minecraft|\.jar|forge|fabric|quilt|optifine|lunar|badlion|tlauncher')
-
-        if ($matched) {
-            $target = $p.ExecutablePath
-            if ([string]::IsNullOrWhiteSpace($target)) { $target = $p.Name }
-            Add-Candidate -Path $target -Source "running-process" -Boost 20
-            $risk = Invoke-YrysAiRisk -Path $target -Kind "PROCESS" -Sources @("running-process") -Boost 20
-            Add-Finding -Kind "PROCESS" -Target ($p.Name + " PID=" + $p.ProcessId + " PATH=" + $target) -Score $risk.Score -Evidence $risk.Evidence -Source "process"
-        }
-
-        if ($javaLike) {
-            $jarMatches = [regex]::Matches($text, '([A-Za-z]:\\[^" ]+?\.jar|(?:"[^"]+?\.jar")|[^"\s]+?\.jar)')
-            foreach ($m in $jarMatches) {
-                $jp = $m.Value.Trim('"')
-                if (Test-Path -LiteralPath $jp) {
-                    Add-Candidate -Path $jp -Source "java-commandline" -Boost 25
-                }
-            }
-
-            $agentMatches = [regex]::Matches($text, '-javaagent:([^" ]+\.jar)|-agentpath:([^" ]+)|-agentlib:([^" ]+)')
-            foreach ($m in $agentMatches) {
-                $agent = ($m.Value -replace '^-javaagent:','' -replace '^-agentpath:','' -replace '^-agentlib:','').Trim('"')
-                if ($agent) {
-                    Add-Finding -Kind "JAVA_AGENT" -Target ("PID=" + $p.ProcessId + " " + $agent) -Score 85 -Evidence @("Java agent used by Minecraft/Java process", "agents are common for injection or instrumentation") -Source "java-commandline"
-                    if (Test-Path -LiteralPath $agent) { Add-Candidate -Path $agent -Source "java-commandline" -Boost 40 }
-                }
-            }
-        }
-    }
-}
-
-function Scan-LoadedModules {
-    Write-Step "Checking loaded DLL modules in Java/Minecraft processes..."
-    $gps = @()
-    try { $gps = Get-Process -ErrorAction SilentlyContinue } catch { $gps = @() }
-
-    foreach ($p in @($gps)) {
-        if (-not (Test-TimeLeft)) { break }
-        $name = $p.ProcessName.ToLowerInvariant()
-        if ($name -notmatch 'java|javaw|minecraft|launcher|badlion|lunar|tlauncher') { continue }
-        $mods = @()
-        try { $mods = $p.Modules } catch { continue }
-        foreach ($m in @($mods)) {
-            if (-not (Test-TimeLeft)) { break }
-            $script:Stats.Modules++
-            $mp = $m.FileName
-            if ([string]::IsNullOrWhiteSpace($mp)) { continue }
-            $text = ($m.ModuleName + " " + $mp)
-            if ($script:KeywordRegex.IsMatch($text) -or ($mp.ToLowerInvariant().Contains("\temp\"))) {
-                Add-Candidate -Path $mp -Source "loaded-module" -Boost 20
-            }
-        }
-    }
-}
-
-function Get-StartupLocations {
-    $items = New-Object System.Collections.ArrayList
-    $startupDirs = @(
-        [Environment]::GetFolderPath("Startup"),
-        "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp"
-    )
-    foreach ($d in $startupDirs) {
-        if (Test-Path -LiteralPath $d) {
-            try {
-                Get-ChildItem -LiteralPath $d -File -ErrorAction SilentlyContinue | ForEach-Object {
-                    [void]$items.Add($_.FullName)
-                }
-            } catch {}
-        }
-    }
-
-    $regPaths = @(
-        "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run",
-        "HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce",
-        "HKLM:\Software\Microsoft\Windows\CurrentVersion\Run",
-        "HKLM:\Software\Microsoft\Windows\CurrentVersion\RunOnce",
-        "HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run"
-    )
-    foreach ($rp in $regPaths) {
-        try {
-            $props = Get-ItemProperty -Path $rp -ErrorAction SilentlyContinue
-            if ($props) {
-                foreach ($pr in $props.PSObject.Properties) {
-                    if ($pr.Name -match '^PS') { continue }
-                    $val = [string]$pr.Value
-                    if ([string]::IsNullOrWhiteSpace($val)) { continue }
-                    [void]$items.Add($val)
-                }
-            }
-        } catch {}
-    }
-    return @($items)
-}
-
-function Extract-PathsFromText {
-    param([string]$Text)
-    $out = New-Object System.Collections.ArrayList
-    if ([string]::IsNullOrWhiteSpace($Text)) { return @() }
-    $matches = [regex]::Matches($Text, '([A-Za-z]:\\[^"<>|]+?\.(exe|dll|jar))')
-    foreach ($m in $matches) {
-        $p = $m.Value.Trim('"')
-        [void]$out.Add($p)
-    }
-    return @($out | Select-Object -Unique)
-}
-
-function Scan-Persistence {
-    Write-Step "Scanning startup and scheduled tasks..."
-    foreach ($it in Get-StartupLocations) {
-        if (-not (Test-TimeLeft)) { break }
-        $text = [string]$it
-        if ($script:KeywordRegex.IsMatch($text)) {
-            Add-Finding -Kind "STARTUP" -Target $text -Score 80 -Evidence @("startup entry matches cheat keyword") -Source "startup"
-        }
-        foreach ($p in Extract-PathsFromText $text) {
-            if (Test-Path -LiteralPath $p) {
-                Add-Candidate -Path $p -Source "startup" -Boost 20
-            }
-        }
-    }
-
-    try {
-        $tasks = Get-ScheduledTask -ErrorAction SilentlyContinue
-        foreach ($t in @($tasks)) {
-            if (-not (Test-TimeLeft)) { break }
-            $txt = (($t.TaskName + " " + $t.TaskPath + " " + (($t.Actions | Out-String))) -as [string])
-            if ($script:KeywordRegex.IsMatch($txt)) {
-                Add-Finding -Kind "SCHEDULED_TASK" -Target ($t.TaskPath + $t.TaskName) -Score 78 -Evidence @("scheduled task matches cheat keyword") -Source "scheduled-task"
-                foreach ($p in Extract-PathsFromText $txt) {
-                    if (Test-Path -LiteralPath $p) { Add-Candidate -Path $p -Source "scheduled-task" -Boost 20 }
-                }
-            }
-        }
-    } catch {}
+    return $roots.ToArray()
 }
 
 function Get-SmartRoots {
     $roots = New-Object System.Collections.ArrayList
-
-    if ($Fast) {
-        $base = @(
-            $env:USERPROFILE,
-            $env:APPDATA,
-            $env:LOCALAPPDATA,
-            $env:TEMP,
-            "$env:APPDATA\.minecraft",
-            "$env:APPDATA\.tlauncher",
-            "$env:APPDATA\.lunarclient",
-            "$env:APPDATA\.feather",
-            "$env:ProgramData"
-        )
-        foreach ($b in $base) {
-            if ($b -and (Test-Path -LiteralPath $b)) { [void]$roots.Add((Resolve-Path -LiteralPath $b).Path) }
-        }
-    } else {
-        try {
-            [System.IO.DriveInfo]::GetDrives() | Where-Object { $_.DriveType -eq "Fixed" -and $_.IsReady } | ForEach-Object {
-                [void]$roots.Add($_.RootDirectory.FullName)
-            }
-        } catch {
-            if ($env:SystemDrive) { [void]$roots.Add(($env:SystemDrive + "\")) }
-        }
+    foreach ($r in (Get-MinecraftRoots)) { if (-not $roots.Contains($r)) { [void]$roots.Add($r) } }
+    $more = @(
+        $env:TEMP,
+        $env:APPDATA,
+        $env:LOCALAPPDATA,
+        (Join-Path $env:USERPROFILE 'Downloads'),
+        (Join-Path $env:USERPROFILE 'Desktop'),
+        (Join-Path $env:USERPROFILE 'Documents'),
+        ${env:ProgramFiles},
+        ${env:ProgramFiles(x86)},
+        (Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs')
+    )
+    foreach ($r in $more) {
+        if ($r -and (Test-Path $r) -and -not $roots.Contains($r)) { [void]$roots.Add($r) }
     }
+    if ($Deep -and -not $Fast -and -not $OnlyMinecraft) {
+        try {
+            foreach ($d in (Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3")) {
+                $root = $d.DeviceID + '\'
+                if ((Test-Path $root) -and -not $roots.Contains($root)) { [void]$roots.Add($root) }
+            }
+        } catch { }
+    }
+    return $roots.ToArray()
+}
 
-    return @($roots | Select-Object -Unique)
+function Test-SkipDir {
+    param([string]$Dir)
+    if ([string]::IsNullOrWhiteSpace($Dir)) { return $true }
+    $l = $Dir.ToLowerInvariant()
+    $badNames = @('\$recycle.bin', '\system volume information', '\windows\winsxs', '\windows\installer', '\windows\servicing', '\windows\softwaredistribution', '\programdata\microsoft\windows defender', '\appdata\local\google\chrome\user data\default\cache', '\appdata\local\microsoft\edge\user data\default\cache', '\node_modules', '\.git', '\cache', '\caches')
+    foreach ($b in $badNames) { if ($l.Contains($b)) { return $true } }
+    return $false
 }
 
 function Test-InterestingPath {
     param([string]$Path)
-    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
-    $p = $Path.ToLowerInvariant()
-    if ($script:KeywordRegex.IsMatch($p)) { return $true }
-    if ($p.Contains("\.minecraft\") -or $p.Contains("\minecraft\") -or $p.Contains("\tlauncher\") -or $p.Contains("\lunarclient\") -or $p.Contains("\feather\")) { return $true }
-    if ($p.Contains("\mods\") -or $p.Contains("\versions\") -or $p.Contains("\libraries\")) { return $true }
-    if ($p.Contains("\downloads\") -or $p.Contains("\desktop\") -or $p.Contains("\appdata\") -or $p.Contains("\temp\")) {
-        return $true
-    }
+    $l = $Path.ToLowerInvariant()
+    if ($l.Contains('\.minecraft\') -or $l.Contains('\mods\') -or $l.Contains('\versions\') -or $l.Contains('\libraries\')) { return $true }
+    if ($l.Contains('\appdata\') -or $l.Contains('\temp\') -or $l.Contains('\downloads\') -or $l.Contains('\desktop\')) { return $true }
     return $false
 }
 
-function Scan-FileSystemCandidates {
-    Write-Step "Indexing EXE / DLL / JAR candidates across system..."
-    $roots = Get-SmartRoots
-    if ($Fast) {
-        Write-Soft "Mode: FAST smart locations."
-    } else {
-        Write-Soft "Mode: SMART-FULL fixed drives with system-noise pruning."
-    }
-
-    $allowed = @{
-        ".exe" = $true
-        ".dll" = $true
-        ".jar" = $true
-    }
-
+function Find-CandidateFiles {
+    param([string[]]$Roots)
+    $exts = @('.jar','.exe','.dll')
+    $out = New-Object System.Collections.ArrayList
     $stack = New-Object System.Collections.Stack
-    foreach ($r in $roots) { if ($r) { $stack.Push($r) } }
+
+    foreach ($r in $Roots) {
+        if ($r -and (Test-Path $r)) { $stack.Push((Normalize-PathSafe $r)) }
+    }
 
     while ($stack.Count -gt 0) {
-        if (-not (Test-TimeLeft)) { break }
+        if (Test-Expired) { break }
+        if ($out.Count -ge $MaxCandidates) { break }
         $dir = [string]$stack.Pop()
-        if (Test-ExcludedDirectory -Path $dir) { continue }
+        if (Test-SkipDir $dir) { continue }
 
-        $files = $null
         try {
             $files = [System.IO.Directory]::EnumerateFiles($dir)
-        } catch {
-            continue
-        }
+            foreach ($f in $files) {
+                if (Test-Expired) { break }
+                $ext = [System.IO.Path]::GetExtension($f).ToLowerInvariant()
+                if ($exts -notcontains $ext) { continue }
 
-        foreach ($f in $files) {
-            if (-not (Test-TimeLeft)) { break }
-            $script:Stats.FilesSeen++
-            $ext = ""
-            try { $ext = [System.IO.Path]::GetExtension($f).ToLowerInvariant() } catch { continue }
-            if (-not $allowed.ContainsKey($ext)) { continue }
+                $hits = Test-TextHasToken $f $script:AllTokens
+                $interesting = Test-InterestingPath $f
+                if ($OnlyMinecraft) {
+                    if (-not ($interesting -or $ext -eq '.jar')) { continue }
+                }
 
-            $candidate = $false
-            $boost = 0
-            $src = "filesystem"
-
-            if ($script:KeywordRegex.IsMatch($f)) {
-                $candidate = $true
-                $boost += 30
+                if ($hits.Count -gt 0 -or $interesting -or $ext -eq '.jar') {
+                    [void]$out.Add($f)
+                    if ($out.Count -ge $MaxCandidates) { break }
+                }
             }
+        } catch { }
 
-            if ($ext -eq ".jar" -and (Test-InterestingPath -Path $f)) {
-                $candidate = $true
-                $boost += 8
-            }
-
-            if ($Deep -and (Test-InterestingPath -Path $f)) {
-                $candidate = $true
-                $boost += 5
-            }
-
-            if ($candidate) {
-                try {
-                    $fi = Get-Item -LiteralPath $f -ErrorAction SilentlyContinue
-                    if ($fi -and $fi.Length -gt ([int64]$MaxFileSizeMB * 1MB)) {
-                        if (-not $script:KeywordRegex.IsMatch($f)) { continue }
-                    }
-                } catch {}
-                Add-Candidate -Path $f -Source $src -Boost $boost
-            }
-        }
-
-        $dirs = $null
-        try {
-            $dirs = [System.IO.Directory]::EnumerateDirectories($dir)
-        } catch {
-            $dirs = $null
-        }
-        foreach ($sd in @($dirs)) {
-            if (-not (Test-TimeLeft)) { break }
-            if (Test-ExcludedDirectory -Path $sd) { continue }
-            $stack.Push($sd)
-        }
-
-        if (($script:Stats.FilesSeen % 15000) -eq 0 -and $script:Stats.FilesSeen -gt 0) {
-            Write-Host ("    indexed files: {0} | candidates: {1}" -f $script:Stats.FilesSeen, $script:Candidates.Count) -ForegroundColor DarkGray
+        if (-not (Test-Expired)) {
+            try {
+                $dirs = [System.IO.Directory]::EnumerateDirectories($dir)
+                foreach ($d in $dirs) {
+                    if (-not (Test-SkipDir $d)) { $stack.Push($d) }
+                }
+            } catch { }
         }
     }
+    return @($out.ToArray() | Select-Object -Unique)
 }
 
-function Scan-PrefetchLight {
-    Write-Step "Checking Prefetch hints..."
-    $pf = Join-Path $env:SystemRoot "Prefetch"
-    if (-not (Test-Path -LiteralPath $pf)) { return }
+function Read-HeadText {
+    param([string]$Path, [int]$MaxBytes = 2097152)
     try {
-        Get-ChildItem -LiteralPath $pf -Filter "*.pf" -ErrorAction SilentlyContinue | ForEach-Object {
-            if (-not (Test-TimeLeft)) { return }
-            $n = $_.Name.ToLowerInvariant()
-            if ($script:KeywordRegex.IsMatch($n)) {
-                Add-Finding -Kind "PREFETCH" -Target $_.FullName -Score 65 -Evidence @("Windows Prefetch name matches cheat keyword", "program likely executed before") -Source "prefetch"
-            }
-        }
-    } catch {}
+        $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        try {
+            $n = [Math]::Min($MaxBytes, [int]$fs.Length)
+            if ($n -le 0) { return '' }
+            $buf = New-Object byte[] $n
+            [void]$fs.Read($buf, 0, $n)
+            return [System.Text.Encoding]::ASCII.GetString($buf)
+        } finally { $fs.Close() }
+    } catch { return '' }
 }
 
-function Analyze-Candidates {
-    Write-Step "Running local AI risk engine on candidates..."
-    $script:Stats.Candidates = $script:Candidates.Count
-    $i = 0
-    foreach ($kv in $script:Candidates.GetEnumerator()) {
-        if (-not (Test-TimeLeft)) { break }
-        $i++
-        $data = $kv.Value
-        $path = [string]$data.Path
-        if (-not (Test-Path -LiteralPath $path)) { continue }
-        $script:Stats.FilesAnalyzed++
+function Scan-JarLight {
+    param([string]$Path, [string[]]$Tokens)
+    $hits = New-Object System.Collections.ArrayList
+    try {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+        $zip = [System.IO.Compression.ZipFile]::OpenRead($Path)
+        try {
+            $checked = 0
+            foreach ($e in $zip.Entries) {
+                if ($checked -ge 80) { break }
+                if (Test-Expired) { break }
+                $nameHits = Test-TextHasToken $e.FullName $Tokens
+                foreach ($h in $nameHits) { if (-not $hits.Contains($h)) { [void]$hits.Add($h) } }
+                if ($e.Length -gt 0 -and $e.Length -le 262144 -and ($e.FullName -match '\.(txt|json|cfg|properties|mf|yml|yaml|class)$' -or $e.FullName.ToLowerInvariant().Contains('meta-inf'))) {
+                    try {
+                        $stream = $e.Open()
+                        try {
+                            $n = [Math]::Min(262144, [int]$e.Length)
+                            $buf = New-Object byte[] $n
+                            [void]$stream.Read($buf, 0, $n)
+                            $text = [System.Text.Encoding]::ASCII.GetString($buf)
+                            $contentHits = Test-TextHasToken $text $Tokens
+                            foreach ($h in $contentHits) { if (-not $hits.Contains($h)) { [void]$hits.Add($h) } }
+                        } finally { $stream.Close() }
+                    } catch { }
+                    $checked++
+                }
+            }
+        } finally { $zip.Dispose() }
+    } catch { }
+    return $hits.ToArray()
+}
 
-        $sources = @($data.Sources)
-        $risk = Invoke-YrysAiRisk -Path $path -Kind "FILE" -Sources $sources -Boost ([int]$data.Boost)
-        Add-Finding -Kind "FILE" -Target $path -Score $risk.Score -Evidence $risk.Evidence -Source (($sources | Select-Object -Unique) -join ",")
+function Get-SignatureSignal {
+    param([string]$Path)
+    try {
+        $sig = Get-AuthenticodeSignature -LiteralPath $Path -ErrorAction SilentlyContinue
+        if ($null -eq $sig) { return 'NoSignatureInfo' }
+        if ($sig.Status -eq 'Valid') { return 'SignedValid' }
+        return ('UnsignedOrInvalid:' + $sig.Status)
+    } catch { return 'NoSignatureInfo' }
+}
 
-        if (($i % 150) -eq 0) {
-            Write-Host ("    analyzed candidates: {0}/{1}" -f $i, $script:Candidates.Count) -ForegroundColor DarkGray
+function Analyze-File {
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    $score = 0
+    $reasons = New-Object System.Collections.ArrayList
+    $p = Normalize-PathSafe $Path
+    $name = [System.IO.Path]::GetFileName($p)
+    $ext = [System.IO.Path]::GetExtension($p).ToLowerInvariant()
+    $lower = $p.ToLowerInvariant()
+
+    $inputHits = Test-TextHasToken $p $script:InputTokens
+    $allHits = Test-TextHasToken $p $script:AllTokens
+    if ($inputHits.Count -gt 0) {
+        $score += 55 + ([Math]::Min(20, $inputHits.Count * 5))
+        [void]$reasons.Add(('Matches your keywords: ' + ($inputHits -join ', ')))
+    } elseif ($allHits.Count -gt 0) {
+        $score += 35 + ([Math]::Min(15, $allHits.Count * 4))
+        [void]$reasons.Add(('Matches cheat dictionary: ' + ($allHits -join ', ')))
+    }
+
+    if ($ext -eq '.jar') { $score += 8; [void]$reasons.Add('JAR file') }
+    if ($ext -eq '.dll') { $score += 6; [void]$reasons.Add('DLL file') }
+    if ($ext -eq '.exe') { $score += 6; [void]$reasons.Add('EXE file') }
+    if ($lower.Contains('\.minecraft\') -or $lower.Contains('\mods\') -or $lower.Contains('\versions\')) { $score += 18; [void]$reasons.Add('Minecraft-related path') }
+    if ($lower.Contains('\appdata\') -or $lower.Contains('\temp\') -or $lower.Contains('\downloads\')) { $score += 12; [void]$reasons.Add('User/temp/downloads location') }
+    if ($lower.Contains('loader') -or $lower.Contains('inject') -or $lower.Contains('bypass') -or $lower.Contains('selfdestruct')) { $score += 18; [void]$reasons.Add('Loader/injector/bypass naming') }
+
+    try {
+        $fi = Get-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue
+        if ($fi) {
+            if (($fi.Attributes -band [IO.FileAttributes]::Hidden) -ne 0) { $score += 8; [void]$reasons.Add('Hidden file') }
+            if ($fi.LastWriteTime -gt (Get-Date).AddDays(-14)) { $score += 4; [void]$reasons.Add('Recently modified') }
+            if ($fi.Length -lt 2048 -and $ext -in @('.exe','.dll','.jar')) { $score += 6; [void]$reasons.Add('Very small executable/container') }
         }
+    } catch { }
+
+    if ($ext -eq '.jar') {
+        $jarHits = Scan-JarLight $p $script:AllTokens
+        if ($jarHits.Count -gt 0) {
+            $score += 35 + [Math]::Min(20, $jarHits.Count * 5)
+            [void]$reasons.Add(('JAR internal hits: ' + (($jarHits | Select-Object -First 8) -join ', ')))
+        }
+    } elseif ($ext -in @('.exe','.dll')) {
+        if ($score -ge 25 -or (Test-InterestingPath $p)) {
+            $head = Read-HeadText $p 1572864
+            $headHits = Test-TextHasToken $head $script:AllTokens
+            if ($headHits.Count -gt 0) {
+                $score += 28 + [Math]::Min(20, $headHits.Count * 4)
+                [void]$reasons.Add(('Binary string hits: ' + (($headHits | Select-Object -First 8) -join ', ')))
+            }
+            $sig = Get-SignatureSignal $p
+            if ($sig -like 'UnsignedOrInvalid*' -or $sig -eq 'NoSignatureInfo') {
+                $score += 8
+                [void]$reasons.Add($sig)
+            }
+        }
+    }
+
+    if ($score -ge 38) {
+        Add-Finding 'FILE' $p ([Math]::Min(100, $score)) @($reasons)
     }
 }
 
-function Scan-NetworkLight {
-    Write-Step "Checking active TCP connections for cheat domains/IP hints..."
-    $known = @(
-        "vape.gg","riseclient.com","intent.store","entropy.club","whiteout.lol","drip.gg","slinky.gg",
-        "dreamclient.xyz","ravenclient.com","liquidbounce.net"
+function Scan-Processes {
+    Write-Status 'STEP' 'Checking running processes and command lines...'
+    try {
+        $procs = Get-CimInstance Win32_Process
+        foreach ($pr in $procs) {
+            if (Test-Expired) { break }
+            $text = (($pr.Name + ' ' + $pr.ExecutablePath + ' ' + $pr.CommandLine) -as [string])
+            if ([string]::IsNullOrWhiteSpace($text)) { continue }
+            $hitsInput = Test-TextHasToken $text $script:InputTokens
+            $hitsAll = Test-TextHasToken $text $script:AllTokens
+            $isMc = ($text.ToLowerInvariant().Contains('minecraft') -or $text.ToLowerInvariant().Contains('java') -or $text.ToLowerInvariant().Contains('.jar') -or $text.ToLowerInvariant().Contains('forge') -or $text.ToLowerInvariant().Contains('fabric'))
+            if ($OnlyMinecraft -and -not $isMc) { continue }
+            $score = 0
+            $reasons = New-Object System.Collections.ArrayList
+            if ($hitsInput.Count -gt 0) { $score += 70; [void]$reasons.Add(('Process matches your keywords: ' + ($hitsInput -join ', '))) }
+            elseif ($hitsAll.Count -gt 0) { $score += 45; [void]$reasons.Add(('Process matches cheat dictionary: ' + ($hitsAll -join ', '))) }
+            if ($isMc) { $score += 12; [void]$reasons.Add('Minecraft/Java related process') }
+            if (($text.ToLowerInvariant()).Contains('-javaagent') -or ($text.ToLowerInvariant()).Contains('inject')) { $score += 28; [void]$reasons.Add('Java agent/injector indicator') }
+            if ($score -ge 42) {
+                $path = $pr.ExecutablePath
+                if ([string]::IsNullOrWhiteSpace($path)) { $path = $pr.Name }
+                Add-Finding 'PROCESS' $path ([Math]::Min(100, $score)) @($reasons) ('PID=' + $pr.ProcessId)
+            }
+        }
+    } catch { Write-Status 'WARN' 'Process scan failed or blocked.' }
+}
+
+function Scan-LoadedModules {
+    Write-Status 'STEP' 'Checking DLL modules in Java/Minecraft/suspicious processes...'
+    try {
+        $targets = Get-Process | Where-Object { $_.ProcessName -match 'java|javaw|minecraft|lunar|badlion|feather|tlauncher' }
+        foreach ($p in $targets) {
+            if (Test-Expired) { break }
+            try {
+                foreach ($m in $p.Modules) {
+                    $mp = $m.FileName
+                    if ([string]::IsNullOrWhiteSpace($mp)) { continue }
+                    $hits = Test-TextHasToken $mp $script:AllTokens
+                    $score = 0
+                    $reasons = New-Object System.Collections.ArrayList
+                    if ($hits.Count -gt 0) { $score += 70; [void]$reasons.Add(('Loaded DLL matches cheat keyword: ' + ($hits -join ', '))) }
+                    if (($mp.ToLowerInvariant()).Contains('\appdata\') -or ($mp.ToLowerInvariant()).Contains('\temp\')) { $score += 15; [void]$reasons.Add('DLL loaded from user/temp location') }
+                    if ($score -ge 45) { Add-Finding 'LOADED_DLL' $mp ([Math]::Min(100, $score)) @($reasons) ('PID=' + $p.Id + '; Process=' + $p.ProcessName) }
+                }
+            } catch { }
+        }
+    } catch { Write-Status 'WARN' 'Module scan needs administrator rights on some systems.' }
+}
+
+function Scan-Startup {
+    Write-Status 'STEP' 'Checking autoruns and scheduled tasks...'
+    $runKeys = @(
+        'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run',
+        'HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce',
+        'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run',
+        'HKLM:\Software\Microsoft\Windows\CurrentVersion\RunOnce',
+        'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run'
     )
-    $ips = New-Object System.Collections.ArrayList
-    foreach ($d in $known) {
+    foreach ($rk in $runKeys) {
         try {
-            [System.Net.Dns]::GetHostAddresses($d) | ForEach-Object {
-                [void]$ips.Add($_.IPAddressToString)
+            if (-not (Test-Path $rk)) { continue }
+            $props = Get-ItemProperty -Path $rk
+            foreach ($p in $props.PSObject.Properties) {
+                if ($p.Name -like 'PS*') { continue }
+                $val = [string]$p.Value
+                $hits = Test-TextHasToken ($p.Name + ' ' + $val) $script:AllTokens
+                if ($hits.Count -gt 0) {
+                    Add-Finding 'AUTORUN' ($rk + '\' + $p.Name) 78 @('Autorun matches cheat keywords: ' + ($hits -join ', ')) $val
+                }
             }
-        } catch {}
+        } catch { }
     }
-    $ips = @($ips | Select-Object -Unique)
-    if ($ips.Count -eq 0) { return }
 
     try {
-        $conns = Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue
-        foreach ($c in @($conns)) {
-            if (-not (Test-TimeLeft)) { break }
-            if ($ips -contains $c.RemoteAddress) {
-                Add-Finding -Kind "NETWORK" -Target ($c.RemoteAddress + ":" + $c.RemotePort + " PID=" + $c.OwningProcess) -Score 82 -Evidence @("active connection to known cheat-related host IP") -Source "network"
+        $startupFolders = @(
+            [Environment]::GetFolderPath('Startup'),
+            (Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\Startup')
+        )
+        foreach ($sf in $startupFolders) {
+            if (Test-Path $sf) {
+                Get-ChildItem -Path $sf -Force -ErrorAction SilentlyContinue | ForEach-Object {
+                    $hits = Test-TextHasToken $_.FullName $script:AllTokens
+                    if ($hits.Count -gt 0) { Add-Finding 'STARTUP_FOLDER' $_.FullName 76 @('Startup item matches cheat keywords: ' + ($hits -join ', ')) }
+                }
             }
         }
-    } catch {}
+    } catch { }
+
+    if (-not $Fast) {
+        try {
+            $tasks = Get-ScheduledTask
+            foreach ($t in $tasks) {
+                if (Test-Expired) { break }
+                $text = ($t.TaskName + ' ' + $t.TaskPath + ' ' + (($t.Actions | Out-String) -as [string]))
+                $hits = Test-TextHasToken $text $script:AllTokens
+                if ($hits.Count -gt 0) { Add-Finding 'SCHEDULED_TASK' ($t.TaskPath + $t.TaskName) 80 @('Scheduled task matches cheat keywords: ' + ($hits -join ', ')) }
+            }
+        } catch { }
+    }
 }
 
-function Show-Summary {
-    $items = @($script:Findings | Sort-Object -Property @{Expression="Score";Descending=$true}, Severity)
-    $critical = @($items | Where-Object { $_.Severity -eq "CRITICAL" }).Count
-    $high = @($items | Where-Object { $_.Severity -eq "HIGH" }).Count
-    $medium = @($items | Where-Object { $_.Severity -eq "MEDIUM" }).Count
-    $watch = @($items | Where-Object { $_.Severity -eq "WATCH" }).Count
+function Scan-Prefetch {
+    if ($Fast) { return }
+    Write-Status 'STEP' 'Checking Prefetch names...'
+    $pf = Join-Path $env:SystemRoot 'Prefetch'
+    if (-not (Test-Path $pf)) { return }
+    try {
+        Get-ChildItem -Path $pf -Filter '*.pf' -Force -ErrorAction SilentlyContinue | ForEach-Object {
+            $hits = Test-TextHasToken $_.Name $script:AllTokens
+            if ($hits.Count -gt 0) { Add-Finding 'PREFETCH' $_.FullName 58 @('Executed program name matches cheat keyword: ' + ($hits -join ', ')) }
+        }
+    } catch { }
+}
 
-    Write-Host ""
-    Write-Host "=============================================================================="
-    Write-Centered "YRYS CHECKER RESULT" Red
-    Write-Host "=============================================================================="
-    Write-Status "Processes" ([string]$script:Stats.Processes) Cyan
-    Write-Status "Files indexed" ([string]$script:Stats.FilesSeen) Cyan
-    Write-Status "Candidates" ([string]$script:Stats.Candidates) Cyan
-    Write-Status "Analyzed" ([string]$script:Stats.FilesAnalyzed) Cyan
-    Write-Status "JAR scanned" ([string]$script:Stats.JarScanned) Cyan
-    Write-Status "EXE/DLL scanned" ([string]$script:Stats.PeScanned) Cyan
-    Write-Status "Temp cleanup" "enabled; no permanent report" Green
+function Scan-Network {
+    if ($Fast) { return }
+    Write-Status 'STEP' 'Checking established network connections by process name...'
+    try {
+        $pidMap = @{}
+        Get-CimInstance Win32_Process | ForEach-Object { $pidMap[[int]$_.ProcessId] = $_ }
+        $conns = Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue
+        foreach ($c in $conns) {
+            if (Test-Expired) { break }
+            $pid = [int]$c.OwningProcess
+            if (-not $pidMap.ContainsKey($pid)) { continue }
+            $p = $pidMap[$pid]
+            $text = (($p.Name + ' ' + $p.ExecutablePath + ' ' + $p.CommandLine) -as [string])
+            $hits = Test-TextHasToken $text $script:AllTokens
+            if ($hits.Count -gt 0) {
+                Add-Finding 'NETWORK' ($c.RemoteAddress + ':' + $c.RemotePort) 72 @('Network owner process matches cheat keyword: ' + ($hits -join ', ')) ('PID=' + $pid + '; Process=' + $p.Name)
+            }
+        }
+    } catch { }
+}
 
-    if ($script:Stats.TimedOut) {
-        Write-Status "Time limit" "reached; use -MaxMinutes 20 for deeper scan" Yellow
+function Scan-Files {
+    $roots = if ($OnlyMinecraft) { Get-MinecraftRoots } else { Get-SmartRoots }
+    Write-Status 'STEP' ('Scan mode: ' + ($(if ($OnlyMinecraft) { 'MINECRAFT ONLY' } elseif ($Deep) { 'SMART-FULL / DEEP' } elseif ($Fast) { 'FAST' } else { 'SMART' })))
+    Write-Status 'STEP' ('Roots: ' + (($roots | Select-Object -First 8) -join '; ') + $(if ($roots.Count -gt 8) { ' ...' } else { '' }))
+    $files = Find-CandidateFiles $roots
+    Write-Status 'OK' ('Candidate files found: ' + $files.Count)
+    $i = 0
+    foreach ($f in $files) {
+        if (Test-Expired) { Write-Status 'WARN' 'Time limit reached. Showing best results found so far.'; break }
+        $i++
+        if (($i % 80) -eq 0) { Write-Status 'STEP' ('Analyzed ' + $i + ' / ' + $files.Count + ' candidates...') }
+        Analyze-File $f
     }
+}
 
-    Write-Host ""
-    Write-Status "CRITICAL" ([string]$critical) Red
-    Write-Status "HIGH" ([string]$high) Red
-    Write-Status "MEDIUM" ([string]$medium) Yellow
-    Write-Status "WATCH" ([string]$watch) DarkYellow
-    Write-Host ""
+function Show-Results {
+    Write-Line '' Gray
+    Write-Line '==================== AI-LIKE LOCAL VERDICT ====================' Red
+    $all = @($script:Findings | Sort-Object -Property Score -Descending)
+    $crit = @($all | Where-Object { $_.Score -ge 85 })
+    $high = @($all | Where-Object { $_.Score -ge 65 -and $_.Score -lt 85 })
+    $med = @($all | Where-Object { $_.Score -ge 42 -and $_.Score -lt 65 })
 
-    if ($items.Count -eq 0) {
-        Write-Host "  CLEAN: no strong cheat-linked artifacts found by local risk engine." -ForegroundColor Green
-        Write-Host "  Tip: run as Administrator and add -Deep for stronger module/JAR inspection." -ForegroundColor DarkGray
+    $status = 'CLEAN'
+    $color = [ConsoleColor]::Green
+    if ($crit.Count -gt 0) { $status = 'CHEAT LIKELY'; $color = [ConsoleColor]::Red }
+    elseif ($high.Count -gt 0) { $status = 'SUSPICIOUS'; $color = [ConsoleColor]::Yellow }
+    elseif ($med.Count -gt 0) { $status = 'LOW/MEDIUM SIGNALS'; $color = [ConsoleColor]::Cyan }
+
+    Write-Line ('  RESULT: ' + $status) $color
+    Write-Line ('  Critical: ' + $crit.Count + ' | High: ' + $high.Count + ' | Medium: ' + $med.Count + ' | Total shown: ' + $all.Count) Gray
+    Write-Line ('  Runtime: ' + ([int]((Get-Date) - $script:StartedAt).TotalSeconds) + ' sec') DarkGray
+    Write-Line '' Gray
+
+    if ($all.Count -eq 0) {
+        Write-Line '  No strong cheat-related signals found.' Green
+        Write-Line '  Note: no checker can prove that the system is 100% clean.' DarkGray
         return
     }
 
-    $max = [Math]::Min($Top, $items.Count)
-    Write-Host ("  Top {0} risk findings:" -f $max) -ForegroundColor White
-    Write-Host ""
-
-    $idx = 0
-    foreach ($it in ($items | Select-Object -First $max)) {
-        $idx++
-        $color = "DarkYellow"
-        if ($it.Severity -eq "CRITICAL") { $color = "Red" }
-        elseif ($it.Severity -eq "HIGH") { $color = "Red" }
-        elseif ($it.Severity -eq "MEDIUM") { $color = "Yellow" }
-
-        Write-Host ("[{0}] {1} | SCORE {2} | {3}" -f $idx, $it.Severity, $it.Score, $it.Kind) -ForegroundColor $color
-        Write-Host ("    " + $it.Target) -ForegroundColor White
-        Write-Host ("    evidence: " + $it.Evidence) -ForegroundColor DarkGray
-        if ($it.Source) { Write-Host ("    source: " + $it.Source) -ForegroundColor DarkGray }
-        Write-Host ""
+    $n = 0
+    foreach ($x in ($all | Select-Object -First 35)) {
+        $n++
+        $c = [ConsoleColor]::Cyan
+        if ($x.Score -ge 85) { $c = [ConsoleColor]::Red }
+        elseif ($x.Score -ge 65) { $c = [ConsoleColor]::Yellow }
+        Write-Line (('[' + $n + '] ' + $x.Severity + '  score=' + $x.Score + '  type=' + $x.Kind)) $c
+        Write-Line ('    ' + $x.Path) Gray
+        if (-not [string]::IsNullOrWhiteSpace($x.Extra)) { Write-Line ('    ' + $x.Extra) DarkGray }
+        foreach ($r in ($x.Reasons | Select-Object -First 4)) { Write-Line ('    - ' + $r) DarkGray }
+        Write-Line '' Gray
     }
 
-    if ($items.Count -gt $max) {
-        Write-Host ("  Hidden lower findings: {0}. Increase -Top to show more." -f ($items.Count - $max)) -ForegroundColor DarkGray
-    }
-
-    if ($critical -gt 0 -or $high -gt 0) {
-        Write-Host "  VERDICT: CHEAT-LIKELY artifacts found. Review CRITICAL/HIGH paths above." -ForegroundColor Red
-    } elseif ($medium -gt 0) {
-        Write-Host "  VERDICT: SUSPICIOUS. Needs manual review; not enough for a final ban alone." -ForegroundColor Yellow
-    } else {
-        Write-Host "  VERDICT: WATCH ONLY. Weak indicators, likely not enough alone." -ForegroundColor DarkYellow
+    if ($OpenReport) {
+        Write-Line '  -OpenReport is accepted for compatibility, but permanent reports are disabled.' Yellow
+        Write-Line '  Results are displayed only in this console and temp files are removed on exit.' DarkGray
     }
 }
 
 function Main {
+    New-WorkDir
     Show-Banner
-    if ($script:UserCheats.Count -gt 0) {
-        Write-Status "User targets" ($script:UserCheats -join ", ") Yellow
-    } else {
-        Write-Status "User targets" "none; built-in DB only" DarkGray
-    }
-    Write-Status "Scan mode" ($(if ($Fast) { "FAST" } else { "SMART-FULL" }) + $(if ($Deep) { " + DEEP" } else { "" })) Cyan
-    Write-Status "Time limit" ($MaxMinutes.ToString() + " min") Cyan
-    Write-Status "Reports" "disabled; temp data auto-deletes" Green
-    Write-Host ""
-
+    if ($OpenReport) { Write-Status 'WARN' 'OpenReport flag accepted, but report creation is disabled by request.' }
+    if (-not (Test-Admin)) { Write-Status 'WARN' 'Run as Administrator for stronger DLL/module/prefetch checks.' }
+    Initialize-Tokens
+    Write-Status 'STEP' ('Time limit: ' + $MaxMinutes + ' min | Max candidates: ' + $MaxCandidates)
     Scan-Processes
     Scan-LoadedModules
-    Scan-Persistence
-    Scan-FileSystemCandidates
-    Scan-PrefetchLight
-    Scan-NetworkLight
-    Analyze-Candidates
-    Show-Summary
+    Scan-Startup
+    Scan-Prefetch
+    Scan-Network
+    Scan-Files
+    Show-Results
 }
 
 try {
     Main
 } finally {
-    Write-Host ""
-    Write-Host "Press Enter to close and delete temporary files..." -ForegroundColor DarkGray
-    try { [void][Console]::ReadLine() } catch {}
-    Remove-TempNow
+    Remove-WorkDir
 }
