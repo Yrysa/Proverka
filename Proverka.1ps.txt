@@ -1,0 +1,242 @@
+#Requires -Version 5.1
+<#
+.SYNOPSIS
+    YrysCheck Lite — анализ запущенных приложений и Minecraft .jar.
+
+.DESCRIPTION
+    Проверяет:
+    - Запущенные приложения
+    - Java/Minecraft процессы
+    - Используемые .jar файлы в командной строке
+    - Mods-папки Minecraft
+    - Логирует результат в session.log
+#>
+
+[CmdletBinding()]
+param(
+    [switch]$OnlyMinecraft,
+    [switch]$OpenReport
+)
+
+$scriptVersion = "3.0.0"
+$tempRoot = Join-Path $env:TEMP "YrysCheck"
+$logFile = Join-Path $tempRoot "session.log"
+$reportFile = Join-Path $tempRoot "minecraft_jar_report.txt"
+
+if (!(Test-Path $tempRoot)) {
+    New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
+}
+
+function Write-Log {
+    param(
+        [ValidateSet("INFO","WARN","ERROR","OK")]
+        [string]$Level,
+
+        [string]$Message
+    )
+
+    $time = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $line = "[$time] [$Level] $Message"
+
+    Add-Content -Path $logFile -Value $line
+    Add-Content -Path $reportFile -Value $line
+
+    switch ($Level) {
+        "INFO"  { Write-Host "[*] $Message" -ForegroundColor Cyan }
+        "WARN"  { Write-Host "[!] $Message" -ForegroundColor Yellow }
+        "ERROR" { Write-Host "[-] $Message" -ForegroundColor Red }
+        "OK"    { Write-Host "[+] $Message" -ForegroundColor Green }
+    }
+}
+
+function Show-Banner {
+@"
+ __   __  ___ __   __ ___   ___ _  _ ___ ___ _  __
+ \ \ / / | _ \\ \ / // __| / __| || | __/ __| |/ /
+  \ V /  |   / \ V / \__ \| (__| __ | _| (__| ' <
+   |_|   |_|_\  |_|  |___/ \___|_||_|___\___|_|\_\
+
+ Minecraft JAR Analyzer v$scriptVersion
+"@ | Write-Host -ForegroundColor Cyan
+}
+
+function Get-RunningApplications {
+    <#
+    .SYNOPSIS
+        Показывает запущенные пользовательские приложения.
+    #>
+
+    Write-Log INFO "Сканирование запущенных приложений..."
+
+    try {
+        $apps = Get-Process |
+            Where-Object {
+                $_.MainWindowTitle -and
+                $_.ProcessName -notin @("ApplicationFrameHost")
+            } |
+            Sort-Object ProcessName |
+            Select-Object ProcessName, Id, MainWindowTitle
+
+        if (!$apps) {
+            Write-Log WARN "Открытые приложения с окном не найдены."
+            return
+        }
+
+        foreach ($app in $apps) {
+            Write-Log OK "$($app.ProcessName) | PID: $($app.Id) | $($app.MainWindowTitle)"
+        }
+    }
+    catch {
+        Write-Log ERROR "Ошибка анализа приложений: $($_.Exception.Message)"
+    }
+}
+
+function Get-MinecraftJavaProcesses {
+    <#
+    .SYNOPSIS
+        Находит Java/Minecraft процессы и вытаскивает .jar из командной строки.
+    #>
+
+    Write-Log INFO "Поиск Java/Minecraft процессов..."
+
+    try {
+        $processes = Get-CimInstance Win32_Process |
+            Where-Object {
+                $_.Name -match "java|javaw|minecraft|launcher" -or
+                $_.CommandLine -match "minecraft|\.jar|forge|fabric|quilt|optifine"
+            }
+
+        if (!$processes) {
+            Write-Log WARN "Minecraft/Java процессы не найдены."
+            return
+        }
+
+        foreach ($proc in $processes) {
+            Write-Log OK "Процесс: $($proc.Name) | PID: $($proc.ProcessId)"
+            Write-Log INFO "Команда: $($proc.CommandLine)"
+
+            $jarMatches = [regex]::Matches($proc.CommandLine, '([A-Za-z]:\\[^"]+?\.jar|[^"\s]+\.jar)')
+
+            if ($jarMatches.Count -eq 0) {
+                Write-Log WARN "JAR-файлы в командной строке не найдены."
+                continue
+            }
+
+            foreach ($match in $jarMatches) {
+                $jarPath = $match.Value.Trim('"')
+
+                if (Test-Path $jarPath) {
+                    $hash = Get-FileHash -Path $jarPath -Algorithm SHA256
+                    Write-Log OK "JAR: $jarPath"
+                    Write-Log INFO "SHA256: $($hash.Hash)"
+                }
+                else {
+                    Write-Log WARN "JAR указан, но файл не найден: $jarPath"
+                }
+            }
+        }
+    }
+    catch {
+        Write-Log ERROR "Ошибка анализа Minecraft процессов: $($_.Exception.Message)"
+    }
+}
+
+function Get-MinecraftModFolders {
+    <#
+    .SYNOPSIS
+        Проверяет стандартные папки Minecraft с модами.
+    #>
+
+    Write-Log INFO "Проверка папок Minecraft mods..."
+
+    $possibleModFolders = @(
+        "$env:APPDATA\.minecraft\mods",
+        "$env:APPDATA\.minecraft\versions",
+        "$env:APPDATA\.minecraft\libraries",
+        "$env:APPDATA\.tlauncher\legacy\Minecraft\game\mods",
+        "$env:APPDATA\.feather\mods",
+        "$env:APPDATA\.lunarclient\offline\multiver\mods"
+    )
+
+    foreach ($folder in $possibleModFolders) {
+        if (!(Test-Path $folder)) {
+            continue
+        }
+
+        Write-Log OK "Найдена папка: $folder"
+
+        $jarFiles = Get-ChildItem -Path $folder -Filter "*.jar" -Recurse -ErrorAction SilentlyContinue
+
+        if (!$jarFiles) {
+            Write-Log WARN "JAR-файлы не найдены в $folder"
+            continue
+        }
+
+        foreach ($jar in $jarFiles) {
+            try {
+                $hash = Get-FileHash -Path $jar.FullName -Algorithm SHA256
+                Write-Log OK "MOD/JAR: $($jar.FullName)"
+                Write-Log INFO "Размер: $([math]::Round($jar.Length / 1MB, 2)) MB"
+                Write-Log INFO "SHA256: $($hash.Hash)"
+            }
+            catch {
+                Write-Log ERROR "Не удалось проверить файл $($jar.FullName): $($_.Exception.Message)"
+            }
+        }
+    }
+}
+
+function Show-Menu {
+    do {
+        Write-Host ""
+        Write-Host "[1] Проверить запущенные приложения"
+        Write-Host "[2] Проверить Minecraft / Java процессы"
+        Write-Host "[3] Проверить папки Minecraft с .jar"
+        Write-Host "[4] Полный анализ"
+        Write-Host "[O] Открыть отчёт"
+        Write-Host "[Q] Выход"
+        $choice = Read-Host "Выбери действие"
+
+        switch ($choice.ToUpper()) {
+            "1" { Get-RunningApplications }
+            "2" { Get-MinecraftJavaProcesses }
+            "3" { Get-MinecraftModFolders }
+            "4" {
+                Get-RunningApplications
+                Get-MinecraftJavaProcesses
+                Get-MinecraftModFolders
+            }
+            "O" {
+                if (Test-Path $reportFile) {
+                    notepad.exe $reportFile
+                }
+            }
+            "Q" { return }
+            default { Write-Log WARN "Неизвестная команда." }
+        }
+    }
+    while ($true)
+}
+
+Clear-Host
+Show-Banner
+
+Write-Log INFO "Старт анализа"
+Write-Log INFO "Версия скрипта: $scriptVersion"
+Write-Log INFO "Компьютер: $env:COMPUTERNAME"
+Write-Log INFO "Пользователь: $env:USERNAME"
+Write-Log INFO "PowerShell: $($PSVersionTable.PSVersion)"
+
+if ($OnlyMinecraft) {
+    Get-MinecraftJavaProcesses
+    Get-MinecraftModFolders
+}
+else {
+    Show-Menu
+}
+
+if ($OpenReport -and (Test-Path $reportFile)) {
+    notepad.exe $reportFile
+}
+
+Write-Log OK "Готово. Отчёт сохранён: $reportFile"
