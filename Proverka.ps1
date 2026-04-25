@@ -1,12 +1,3 @@
-#Requires -Version 5.1
-<#
-YRYS CHECKER POWER v14.0 UI FORENSIC AI
-Purpose: autonomous local defensive scanner for Minecraft/Java cheat indicators, hidden files, and deleted traces.
-Privacy: no permanent report files are created. Temporary workspace is deleted on exit.
-Design: candidate discovery -> trusted software gate -> explainable local risk engine -> premium console dashboard UI.
-Compatibility: Windows PowerShell 5.1. Script body intentionally ASCII-only.
-#>
-
 [CmdletBinding()]
 param(
     [switch]$SelfTest,
@@ -69,7 +60,7 @@ param(
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = "Continue"
-$script:Version = "14.0.0"
+$script:Version = "15.0.0"
 $script:StartTime = Get-Date
 $script:Deadline = $script:StartTime.AddMinutes([Math]::Max(2,$MaxMinutes))
 $script:TempRoot = Join-Path $env:TEMP ("YRYS_CHECKER_" + ([Guid]::NewGuid().ToString("N")))
@@ -81,6 +72,9 @@ $script:UiPhaseIndex = 0
 $script:UiPhaseTotal = 18
 $script:UiPhaseStarted = Get-Date
 $script:UiLastStatus = "init"
+$script:IsElevated = $false
+$script:AdminMethod = "not_checked"
+$script:AdminChecks = ""
 $script:Findings = New-Object System.Collections.Generic.List[object]
 $script:Ignored = New-Object System.Collections.Generic.List[object]
 $script:CandidatesSeen = 0
@@ -192,15 +186,17 @@ function Get-UiIconForSeverity {
 }
 
 function Write-UiRule {
-    param([string]$Title = "", [string]$Color = "DarkGray")
+    param([string]$Title = "", [string]$Color = "DarkMagGray")
+    if ($Color -eq "DarkMagGray") { $Color = "DarkMagenta" }
     $w = $script:UiWidth
+    $spark = ".*..*..*..*..*..*..*..*..*..*..*..*..*..*..*..*..*..*..*..*..*..*..*..*..*..*..*..*..*..*..*..*."
     if ([string]::IsNullOrWhiteSpace($Title)) {
-        Write-YLine (Repeat-Text "=" $w) $Color
+        Write-YLine (Truncate-UiText $spark $w) $Color
         return
     }
-    $label = " " + $Title + " "
-    $left = [Math]::Max(2, [int](($w - $label.Length) / 2))
-    $right = [Math]::Max(2, $w - $left - $label.Length)
+    $label = "[ " + $Title + " ]"
+    $left = [Math]::Max(3, [int](($w - $label.Length) / 2))
+    $right = [Math]::Max(3, $w - $left - $label.Length)
     Write-YLine ((Repeat-Text "=" $left) + $label + (Repeat-Text "=" $right)) $Color
 }
 
@@ -216,15 +212,16 @@ function Write-UiBoxLine {
 function Write-UiBox {
     param([string]$Title, [string[]]$Lines, [string]$Color = "White")
     $w = $script:UiWidth
+    Write-YLine ("+" + (Repeat-Text "=" ($w-2)) + "+") $Color
+    if ($Title) { Write-UiBoxLine (":: " + $Title + " ::") $Color }
     Write-YLine ("+" + (Repeat-Text "-" ($w-2)) + "+") $Color
-    if ($Title) { Write-UiBoxLine ("[ " + $Title + " ]") $Color }
     foreach ($line in @($Lines)) { Write-UiBoxLine $line "Gray" }
-    Write-YLine ("+" + (Repeat-Text "-" ($w-2)) + "+") $Color
+    Write-YLine ("+" + (Repeat-Text "=" ($w-2)) + "+") $Color
 }
 
 function Write-UiKV {
     param([string]$Key, [string]$Value, [string]$Color = "Gray")
-    $label = ($Key + ":").PadRight(20)
+    $label = ($Key + ":").PadRight(22)
     Write-YLine ("  " + $label + " " + $Value) $Color
 }
 
@@ -232,28 +229,35 @@ function Get-UiBar {
     param([int]$Value, [int]$Max, [int]$Width = 28)
     if ($Max -le 0) { $Max = 1 }
     $filled = [Math]::Min($Width, [Math]::Max(0, [int][Math]::Round(($Value / [double]$Max) * $Width)))
-    return "[" + (Repeat-Text "#" $filled) + (Repeat-Text "." ($Width - $filled)) + "]"
+    return "[" + (Repeat-Text "#" $filled) + (Repeat-Text "-" ($Width - $filled)) + "]"
 }
 
 function Write-UiBarLine {
     param([string]$Name, [int]$Value, [int]$Max, [string]$Color = "Gray")
-    Write-YLine ("  " + $Name.PadRight(12) + " " + (Get-UiBar -Value $Value -Max $Max -Width 26) + " " + $Value) $Color
+    Write-YLine ("  " + $Name.PadRight(12) + " " + (Get-UiBar -Value $Value -Max $Max -Width 28) + " " + $Value) $Color
+}
+
+function Write-CosmicStatus {
+    param([string]$Name, [string]$Value, [string]$Color = "Gray")
+    $line = "  <" + $Name.PadRight(14) + "> " + $Value
+    Write-YLine $line $Color
 }
 
 function Start-UiPhase {
     param([string]$Name, [string]$Details = "")
     $script:UiPhaseIndex++
     $script:UiLastStatus = $Name
+    $phase = "PHASE " + $script:UiPhaseIndex + "/" + $script:UiPhaseTotal
     if ($script:UiCompact) {
-        Write-YLine ("  [" + $script:UiPhaseIndex + "/" + $script:UiPhaseTotal + "] " + $Name + $(if($Details){" - " + $Details}else{""})) "DarkGray"
+        Write-YLine ("  [" + $script:UiPhaseIndex + "/" + $script:UiPhaseTotal + "] " + $Name + $(if($Details){" - " + $Details}else{""})) "DarkCyan"
     } else {
-        Write-UiRule ("PHASE " + $script:UiPhaseIndex + "/" + $script:UiPhaseTotal + " - " + $Name) "DarkGray"
-        if ($Details) { Write-YLine ("  " + $Details) "DarkGray" }
+        Write-UiRule ($phase + "  ::  " + $Name) "DarkMagenta"
+        if ($Details) { Write-YLine ("  orbit: " + $Details) "DarkCyan" }
     }
     if (-not $script:UiNoProgress) {
         try {
             $pct = [Math]::Min(100, [Math]::Max(0, [int](($script:UiPhaseIndex / [double]$script:UiPhaseTotal) * 100)))
-            Write-Progress -Activity "YRYS CHECKER" -Status $Name -PercentComplete $pct
+            Write-Progress -Activity "YRYS CHECKER COSMIC" -Status $Name -PercentComplete $pct
         } catch {}
     }
 }
@@ -261,19 +265,34 @@ function Start-UiPhase {
 function Show-Banner {
     Clear-Host
     $script:UiPhaseStarted = Get-Date
+    $adminState = if ($script:IsElevated) { "YES / " + $script:AdminMethod } else { "NO / " + $script:AdminMethod }
     Write-YLine "" "DarkGray"
-    Write-YLine "YYYYYYY  RRRRRR   YYYYYYY  SSSSS       CCCCC  H   H  EEEEE  CCCCC  K   K  EEEEE  RRRRRR" "Red"
-    Write-YLine "   Y     R    R      Y     S           C       H   H  E      C      K  K   E      R    R" "Red"
-    Write-YLine "   Y     RRRRRR      Y      SSS        C       HHHHH  EEEE   C      KKK    EEEE   RRRRRR" "Red"
-    Write-YLine "   Y     R  R        Y         S       C       H   H  E      C      K  K   E      R  R" "Red"
-    Write-YLine "   Y     R   RR      Y     SSSSS        CCCCC  H   H  EEEEE   CCCCC K   K  EEEEE  R   RR" "Red"
-    Write-UiRule "POWER v14.0 - AUTONOMOUS FORENSIC AI UI" "Red"
-    Write-UiBox "SESSION" @(
-        "Mode: local scan only | no permanent reports | temp cleaned on exit",
-        ("Temp workspace: " + $script:TempRoot),
-        "UI: evidence cards + dashboard + phase progress + false-positive gate",
-        "Modules: files/process/java/registry/USB/HWID/WMI/browser/discord/macros/USN/DNS/BITS"
-    ) "DarkRed"
+    Write-YLine "                 .        *        .       .        *        ." "DarkMagenta"
+    Write-YLine "          *         Y R Y S   C H E C K E R   C O S M I C         *" "Magenta"
+    Write-YLine "     .__________________________________________________________________." "DarkMagenta"
+    Write-YLine "     |  YYYYY  RRRRR   YYYYY   SSSS      CCCC  H   H  EEEEE  CCCC  K  K |" "Red"
+    Write-YLine "     |    Y    R   R     Y    S         C      H   H  E     C      K K  |" "Red"
+    Write-YLine "     |    Y    RRRR      Y     SSS      C      HHHHH  EEEE  C      KK   |" "Red"
+    Write-YLine "     |    Y    R  R      Y        S     C      H   H  E     C      K K  |" "Red"
+    Write-YLine "     |    Y    R   R     Y    SSSS       CCCC  H   H  EEEEE  CCCC  K  K |" "Red"
+    Write-YLine "     |__________________________________________________________________|" "DarkMagenta"
+    Write-YLine "                    FORENSIC AI v15.0  ::  COSMIC UI" "Cyan"
+    Write-YLine "" "DarkGray"
+    Write-UiBox "MISSION CONTROL" @(
+        "Scan mode: autonomous local forensic scan",
+        "Admin: " + $adminState,
+        "Workspace: " + $script:TempRoot,
+        "Privacy: no permanent reports; temp workspace removed on exit",
+        "Engines: files, processes, java, registry, USB, HWID, WMI, browser, Discord, macros, USN, DNS, BITS",
+        "Output: dashboard, triage, evidence cards, confidence and risk bars"
+    ) "Magenta"
+    if (-not $script:IsElevated) {
+        Write-UiBox "ELEVATION" @(
+            "Admin token was not detected by token/fltmc/fsutil checks.",
+            "Some protected areas may be partial: Prefetch, BAM/DAM, services, drivers, USN, process modules.",
+            "If your terminal is already elevated, Windows/UAC policy may still block specific providers. The scanner will use fallbacks."
+        ) "Yellow"
+    }
     Write-YLine "" "DarkGray"
 }
 
@@ -927,7 +946,6 @@ function Should-PreCandidate {
     $hits = Test-AnyTokenInText -Text ($File.Name + " " + $File.DirectoryName) -Tokens $script:CriticalCheatTokens
     if ($hits.Count -gt 0) { return $true }
     if (($Deep -or $FullSystem -or $AllDrives) -and $ext -in @(".exe", ".dll")) {
-        # In system folders, do not deeply analyze every normal signed vendor file unless it has useful context.
         if (Test-TrustedPath $File.FullName) {
             if ($File.LastWriteTime -gt (Get-Date).AddDays(-45)) { return $true }
             return $false
@@ -987,10 +1005,34 @@ function Get-CommandLinePaths {
 }
 function Analyze-RunningProcesses {
     Write-YLine "  > Checking running processes, command lines, and JVM agent flags..." "Cyan"
+    $procs = @()
+    $source = "none"
     try {
-        $procs = Get-CimInstance Win32_Process -ErrorAction Stop
-        foreach ($p in $procs) {
-            if ((Get-Date) -gt $script:Deadline) { break }
+        $procs = @(Get-CimInstance Win32_Process -ErrorAction Stop)
+        $source = "CIM"
+    } catch {
+        try {
+            $procs = @(Get-WmiObject Win32_Process -ErrorAction Stop)
+            $source = "WMI"
+        } catch {
+            try {
+                $gp = @(Get-Process -ErrorAction SilentlyContinue)
+                foreach ($x in $gp) {
+                    $procs += [pscustomobject]@{ Name = ($x.ProcessName + ".exe"); ProcessId = $x.Id; CommandLine = ""; ParentProcessId = 0 }
+                }
+                $source = "GetProcessFallback"
+            } catch {
+                $script:BlockedErrors++
+                if ($script:IsElevated) { Write-YLine "  ! Process providers blocked even with admin token. Continuing with other modules." "Yellow" }
+                else { Write-YLine "  ! Process providers blocked and admin token not detected. Continuing with other modules." "Yellow" }
+                return
+            }
+        }
+    }
+    Write-YLine ("  + Process provider: " + $source + " | count=" + $procs.Count) "DarkCyan"
+    foreach ($p in $procs) {
+        if ((Get-Date) -gt $script:Deadline) { break }
+        try {
             $line = [string]$p.CommandLine
             $name = [string]$p.Name
             $text = ($name + " " + $line)
@@ -1001,18 +1043,18 @@ function Analyze-RunningProcesses {
                 $ev = New-Object System.Collections.Generic.List[string]
                 if ($hits.Count -gt 0) { [void]$ev.Add("process command/name token: " + (($hits | Select-Object -First 8) -join ", ")) }
                 if ($javaAgent) { [void]$ev.Add("JVM injection-like argument detected") }
+                if ($source -eq "GetProcessFallback") { [void]$ev.Add("command line unavailable because CIM/WMI was blocked") }
                 $score = 35 + ([Math]::Min(80, $hits.Count * 15))
                 if ($javaAgent) { $score += 60 }
                 Add-Finding -Object ("PID " + $p.ProcessId + " " + $name) -ObjectType "PROCESS" -Score $score -Severity (Convert-ScoreToSeverity $score) -Class "running_process_candidate" -Evidence @($ev)
             }
-            foreach ($path in Get-CommandLinePaths $line) {
-                if ($javaAgent -and $path.ToLowerInvariant().EndsWith(".jar")) { Analyze-FileCandidate -Path $path -Source "javaagent" }
-                else { Analyze-FileCandidate -Path $path -Source "process" }
+            if (-not [string]::IsNullOrWhiteSpace($line)) {
+                foreach ($path in Get-CommandLinePaths $line) {
+                    if ($javaAgent -and $path.ToLowerInvariant().EndsWith(".jar")) { Analyze-FileCandidate -Path $path -Source "javaagent" }
+                    else { Analyze-FileCandidate -Path $path -Source "process" }
+                }
             }
-        }
-    } catch {
-        Write-YLine "  ! Process scan blocked. Try running PowerShell as Administrator." "Yellow"
-        $script:BlockedErrors++
+        } catch { $script:BlockedErrors++ }
     }
 }
 
@@ -1152,7 +1194,6 @@ function Analyze-DeletedAndExecutionTraces {
     if ($NoDeletedTraces) { return }
     Write-YLine "  > Checking deleted/execution traces: Recycle Bin, Recent, JumpLists, UserAssist, BAM/DAM, Prefetch, Minecraft logs..." "Cyan"
     $traceTokens = $script:CriticalCheatTokens + $script:StrongEvidenceTokens
-    # Recycle Bin metadata and names
     try {
         foreach ($drive in Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue) {
             $rb = Join-Path $drive.Root "`$Recycle.Bin"
@@ -1169,7 +1210,6 @@ function Analyze-DeletedAndExecutionTraces {
             }
         }
     } catch { $script:BlockedErrors++ }
-    # Recent files and Jump Lists by filename/content window
     $traceRoots = @(
         (Join-Path $env:APPDATA "Microsoft\Windows\Recent"),
         (Join-Path $env:APPDATA "Microsoft\Windows\Recent\AutomaticDestinations"),
@@ -1189,7 +1229,6 @@ function Analyze-DeletedAndExecutionTraces {
             }
         } catch { $script:BlockedErrors++ }
     }
-    # Prefetch names and strings
     try {
         $pfroot = Join-Path $env:WINDIR "Prefetch"
         if (Test-Path $pfroot) {
@@ -1204,7 +1243,6 @@ function Analyze-DeletedAndExecutionTraces {
             }
         }
     } catch { $script:BlockedErrors++ }
-    # UserAssist ROT13 traces
     try {
         $uaBase = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\UserAssist"
         if (Test-Path $uaBase) {
@@ -1225,7 +1263,6 @@ function Analyze-DeletedAndExecutionTraces {
             }
         }
     } catch { $script:BlockedErrors++ }
-    # BAM/DAM paths
     try {
         $bamRoots = @("HKLM:\SYSTEM\CurrentControlSet\Services\bam\State\UserSettings", "HKLM:\SYSTEM\CurrentControlSet\Services\dam\State\UserSettings")
         foreach ($br in $bamRoots) {
@@ -1244,7 +1281,6 @@ function Analyze-DeletedAndExecutionTraces {
             }
         }
     } catch { $script:BlockedErrors++ }
-    # Minecraft/launcher logs
     $logRoots = @(
         (Join-Path $env:APPDATA ".minecraft\logs"),
         (Join-Path $env:APPDATA ".tlauncher"),
@@ -1408,7 +1444,6 @@ function Analyze-VMIndicators {
 function Invoke-AmsiOptional {
     if (-not $Amsi) { return }
     Write-YLine "  > AMSI option enabled. PowerShell AMSI direct file scanning is limited; checking suspicious text windows only." "Cyan"
-    # Intentionally conservative: no bypasses, no memory tampering, no invasive scanning.
     foreach ($f in @($script:Findings | Where-Object { $_.ObjectType -in @("JAR","EXE","DLL") } | Select-Object -First 80)) {
         try {
             $txt = Read-TextWindowSafe -Path $f.Object -MaxBytes 262144
@@ -1475,7 +1510,6 @@ function Invoke-VirusTotalOptional {
             $sent++
             Start-Sleep -Milliseconds 300
         } catch {
-            # Public API may return 404 for unknown hash or rate limits. Do not treat as detection.
             $sent++
             Start-Sleep -Milliseconds 300
         }
@@ -1483,12 +1517,74 @@ function Invoke-VirusTotalOptional {
 }
 
 
-function Test-IsAdministratorV12 {
+function Test-IsAdministratorV15 {
+    $checks = New-Object System.Collections.Generic.List[string]
+    $ok = $false
+    $method = "none"
     try {
         $id = [Security.Principal.WindowsIdentity]::GetCurrent()
         $p = New-Object Security.Principal.WindowsPrincipal($id)
-        return $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-    } catch { return $false }
+        $role = New-Object Security.Principal.SecurityIdentifier("S-1-5-32-544")
+        if ($p.IsInRole($role) -or $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+            $ok = $true
+            $method = "token_role"
+            [void]$checks.Add("token_role=ok")
+        } else {
+            [void]$checks.Add("token_role=no")
+        }
+    } catch { [void]$checks.Add("token_role=error") }
+    try {
+        $fltmc = Join-Path $env:WINDIR "System32\fltmc.exe"
+        if (Test-Path -LiteralPath $fltmc) {
+            $pinfo = New-Object System.Diagnostics.ProcessStartInfo
+            $pinfo.FileName = $fltmc
+            $pinfo.Arguments = "filters"
+            $pinfo.UseShellExecute = $false
+            $pinfo.RedirectStandardOutput = $true
+            $pinfo.RedirectStandardError = $true
+            $pinfo.CreateNoWindow = $true
+            $proc = New-Object System.Diagnostics.Process
+            $proc.StartInfo = $pinfo
+            [void]$proc.Start()
+            [void]$proc.WaitForExit(2500)
+            if ($proc.ExitCode -eq 0) {
+                if (-not $ok) { $method = "fltmc" }
+                $ok = $true
+                [void]$checks.Add("fltmc=ok")
+            } else { [void]$checks.Add("fltmc=exit" + $proc.ExitCode) }
+        }
+    } catch { [void]$checks.Add("fltmc=error") }
+    try {
+        $fsutil = Join-Path $env:WINDIR "System32\fsutil.exe"
+        if (Test-Path -LiteralPath $fsutil) {
+            $pinfo = New-Object System.Diagnostics.ProcessStartInfo
+            $pinfo.FileName = $fsutil
+            $pinfo.Arguments = "dirty query " + $env:SystemDrive
+            $pinfo.UseShellExecute = $false
+            $pinfo.RedirectStandardOutput = $true
+            $pinfo.RedirectStandardError = $true
+            $pinfo.CreateNoWindow = $true
+            $proc = New-Object System.Diagnostics.Process
+            $proc.StartInfo = $pinfo
+            [void]$proc.Start()
+            [void]$proc.WaitForExit(2500)
+            if ($proc.ExitCode -eq 0) {
+                if (-not $ok) { $method = "fsutil" }
+                $ok = $true
+                [void]$checks.Add("fsutil=ok")
+            } else { [void]$checks.Add("fsutil=exit" + $proc.ExitCode) }
+        }
+    } catch { [void]$checks.Add("fsutil=error") }
+    try {
+        $testPath = Join-Path $env:WINDIR ("Temp\yrys_admin_" + [Guid]::NewGuid().ToString("N") + ".tmp")
+        Set-Content -LiteralPath $testPath -Value "x" -Encoding ASCII -ErrorAction Stop
+        Remove-Item -LiteralPath $testPath -Force -ErrorAction SilentlyContinue
+        if (-not $ok) { $method = "windows_temp_write" }
+        $ok = $true
+        [void]$checks.Add("windows_temp_write=ok")
+    } catch { [void]$checks.Add("windows_temp_write=no") }
+    if (-not $ok) { $method = "not_elevated_or_uac_restricted" }
+    return [pscustomobject]@{ IsAdmin = [bool]$ok; Method = $method; Checks = ($checks -join "; ") }
 }
 
 function Invoke-ExternalTextLimitedV12 {
@@ -2442,9 +2538,10 @@ function Show-FinalVerdict {
         foreach ($x in ($script:Ignored | Sort-Object Score -Descending | Select-Object -First 30)) { Print-FindingBlock -F $x -Index $j; $j++ }
     }
     Write-YLine "" "DarkGray"
+    $adminNote = if ($script:IsElevated) { "Admin: detected via " + $script:AdminMethod + ". Protected modules will use elevated access where Windows allows." } else { "Admin: not detected. Protected modules may be partial." }
     Write-UiBox "NOTES" @(
         "Deleted/execution traces mean possible past use, not necessarily current installation.",
-        "Run as Administrator for better module, Prefetch, BAM/DAM, service and USN visibility.",
+        $adminNote,
         "Use -CompactUI for short output, -ShowIgnored to audit filtered trusted/weak objects."
     ) "DarkGray"
 }
@@ -2452,6 +2549,10 @@ function Show-FinalVerdict {
 function Main {
     if ($SelfTest) { Test-SelfSyntax }
     Initialize-Workspace
+    $adminProbe = Test-IsAdministratorV15
+    $script:IsElevated = [bool]$adminProbe.IsAdmin
+    $script:AdminMethod = [string]$adminProbe.Method
+    $script:AdminChecks = [string]$adminProbe.Checks
     Show-Banner
     if ($OpenReport) { Write-YLine "  ! OpenReport accepted for compatibility, but permanent reports are disabled." "Yellow" }
     if ($FullSystem) {
