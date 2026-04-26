@@ -55,6 +55,11 @@ param(
     [switch]$CompactUI,
     [switch]$NoColor,
     [switch]$NoProgress,
+    [switch]$ScreenPrivacyGuard,
+    [switch]$NoScreenPrivacyGuard,
+    [ValidateSet("Warn","Pause","Exit")]
+    [string]$ScreenGuardMode = "Warn",
+    [int]$ScreenGuardPauseSeconds = 15,
     [int]$UiWidth = 100
 )
 
@@ -6210,6 +6215,709 @@ $script:YrysKbRules = @(
     [pscustomobject]@{ Id='KB3599'; Token='nodus.mod'; Category='package_fragment'; Weight=45; Applies='path,file,jar,log,trace' }
     [pscustomobject]@{ Id='KB3600'; Token='nodus/mod'; Category='package_fragment'; Weight=45; Applies='path,file,jar,log,trace' }
 )
+
+$script:Version = "16.0.0"
+$script:UiPhaseTotal = 10
+$script:UiNoProgress = $true
+
+function Get-SecondsLeftV16 {
+    try { return [Math]::Max(0, [int]($script:Deadline - (Get-Date)).TotalSeconds) } catch { return 0 }
+}
+
+function Get-TimeBoxV16 {
+    $s = Get-SecondsLeftV16
+    $m = [int]($s / 60)
+    $r = [int]($s % 60)
+    return ($m.ToString("00") + ":" + $r.ToString("00"))
+}
+
+function Write-NeonV16 {
+    param([string]$Text = "", [string]$Color = "Gray", [switch]$NoNewline)
+    try {
+        if ($script:UiNoColor) { $Color = "Gray" }
+        if ($NoNewline) { Write-Host $Text -ForegroundColor $Color -NoNewline } else { Write-Host $Text -ForegroundColor $Color }
+    } catch { Write-Host $Text }
+}
+
+function Write-UiRule {
+    param([string]$Title = "", [string]$Color = "DarkMagenta")
+    $w = [Math]::Max(88, [Math]::Min(150, $script:UiWidth))
+    if ([string]::IsNullOrWhiteSpace($Title)) {
+        Write-NeonV16 ("=" * $w) $Color
+        return
+    }
+    $label = "[ " + $Title + " ]"
+    if ($label.Length -gt ($w - 4)) { $label = $label.Substring(0, $w - 7) + "..." }
+    $left = [Math]::Max(2, [int](($w - $label.Length) / 2))
+    $right = [Math]::Max(2, $w - $left - $label.Length)
+    Write-NeonV16 (("=" * $left) + $label + ("=" * $right)) $Color
+}
+
+function Write-NeonBoxV16 {
+    param([string]$Title, [string[]]$Lines, [string]$Color = "Magenta")
+    $w = [Math]::Max(88, [Math]::Min(150, $script:UiWidth))
+    $inner = $w - 4
+    Write-NeonV16 ("+" + ("=" * ($w-2)) + "+") $Color
+    $t = " " + $Title + " "
+    if ($t.Length -gt $inner) { $t = $t.Substring(0,$inner) }
+    Write-NeonV16 ("|" + $t.PadRight($w-2) + "|") $Color
+    Write-NeonV16 ("+" + ("-" * ($w-2)) + "+") $Color
+    foreach ($line in @($Lines)) {
+        $s = [string]$line
+        $s = $s -replace "`r|`n|`t", " "
+        if ($s.Length -gt $inner) { $s = $s.Substring(0, $inner-3) + "..." }
+        Write-NeonV16 ("| " + $s.PadRight($inner) + " |") "Gray"
+    }
+    Write-NeonV16 ("+" + ("=" * ($w-2)) + "+") $Color
+}
+
+function Start-UiPhase {
+    param([string]$Name, [string]$Details = "")
+    $script:UiPhaseIndex++
+    $script:UiLastStatus = $Name
+    $left = Get-TimeBoxV16
+    $phase = ("PHASE " + $script:UiPhaseIndex + "/" + $script:UiPhaseTotal).PadRight(11)
+    $line = "  " + $phase + "  " + $Name.PadRight(28) + "  time left " + $left
+    Write-UiRule $line "DarkMagenta"
+    if ($Details) { Write-NeonV16 ("  " + $Details) "DarkCyan" }
+}
+
+function Show-Banner {
+    Clear-Host
+    $adminState = if ($script:IsElevated) { "YES / " + $script:AdminMethod } else { "NO / " + $script:AdminMethod }
+    $mode = if ($FullSystem) { "FULLSYSTEM PRIORITY" } elseif ($Deep) { "DEEP PRIORITY" } elseif ($Fast) { "FAST" } else { "SMART" }
+    Write-NeonV16 "" "DarkGray"
+    Write-NeonV16 "      __   __ ____  __   __ ____        ____ _   _ _____ ____ _  _______ ____" "Red"
+    Write-NeonV16 "      \ \ / /|  _ \ \ \ / / ___|      / ___| | | | ____/ ___| |/ / ____|  _ \" "Red"
+    Write-NeonV16 "       \ V / | |_) | \ V /\___ \     | |   | |_| |  _|| |   | ' /|  _| | |_) |" "Red"
+    Write-NeonV16 "        | |  |  _ <   | |  ___) |    | |___|  _  | |__| |___| . \| |___|  _ <" "Red"
+    Write-NeonV16 "        |_|  |_| \_\  |_| |____/      \____|_| |_|_____\____|_|\_\_____|_| \_\" "Red"
+    Write-NeonV16 "" "DarkGray"
+    Write-NeonBoxV16 "NEON CORE v16.0 :: FIVE-MINUTE FORENSIC AI" @(
+        "Mode: " + $mode + " | time budget: " + $MaxMinutes + " min | candidates cap: " + $MaxCandidates,
+        "Admin: " + $adminState,
+        "UI: stable ASCII neon dashboard; no PowerShell progress overlay by default",
+        "Speed: priority roots, bounded directory walk, fast evidence-first scoring",
+        "Privacy: no permanent reports; temp workspace removed on exit"
+    ) "Magenta"
+    if (-not $script:IsElevated) {
+        Write-NeonBoxV16 "ADMIN ACCESS" @(
+            "Admin was not detected by token/fltmc/fsutil checks.",
+            "The scan still runs, but protected areas can be partial.",
+            "If the terminal is elevated and this is still NO, Windows policy is blocking one of the providers."
+        ) "Yellow"
+    }
+}
+
+function Get-FastRootSetV16 {
+    $roots = New-Object System.Collections.Generic.List[string]
+    $add = { param($p) if ($p -and (Test-Path -LiteralPath $p) -and -not $roots.Contains($p)) { [void]$roots.Add($p) } }
+    & $add (Join-Path $env:APPDATA ".minecraft")
+    & $add (Join-Path $env:APPDATA ".tlauncher")
+    & $add (Join-Path $env:APPDATA "PrismLauncher")
+    & $add (Join-Path $env:LOCALAPPDATA "PrismLauncher")
+    & $add (Join-Path $env:APPDATA "PolyMC")
+    & $add (Join-Path $env:APPDATA "MultiMC")
+    & $add (Join-Path $env:APPDATA "GDLauncher")
+    & $add (Join-Path $env:APPDATA "ATLauncher")
+    & $add (Join-Path $env:APPDATA "ModrinthApp")
+    & $add (Join-Path $env:APPDATA "CurseForge")
+    & $add (Join-Path $env:LOCALAPPDATA "Programs")
+    & $add (Join-Path $env:LOCALAPPDATA "Temp")
+    & $add $env:TEMP
+    & $add (Join-Path $env:USERPROFILE "Downloads")
+    & $add (Join-Path $env:USERPROFILE "Desktop")
+    & $add (Join-Path $env:USERPROFILE "Documents")
+    & $add (Join-Path $env:PROGRAMDATA "Microsoft\Windows\Start Menu\Programs\Startup")
+    foreach ($dyn in Get-DynamicLauncherRoots) { & $add $dyn }
+    if ($OnlyMinecraft) { return @($roots) }
+    if ($Deep -or $FullSystem -or $AllDrives) {
+        & $add $env:PROGRAMDATA
+        & $add $env:ProgramFiles
+        & $add ${env:ProgramFiles(x86)}
+        & $add (Join-Path $env:WINDIR "Temp")
+        & $add (Join-Path $env:WINDIR "System32")
+        & $add (Join-Path $env:WINDIR "SysWOW64")
+    }
+    if ($FullSystem -or $AllDrives) {
+        try {
+            foreach ($d in Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" -ErrorAction SilentlyContinue) {
+                if ($d.DeviceID) {
+                    $drive = $d.DeviceID + "\"
+                    & $add $drive
+                    & $add (Join-Path $drive "Games")
+                    & $add (Join-Path $drive "Minecraft")
+                    & $add (Join-Path $drive "Launchers")
+                    & $add (Join-Path $drive "Clients")
+                    & $add (Join-Path $drive "Downloads")
+                    & $add (Join-Path $drive "Temp")
+                    & $add (Join-Path $drive "Users")
+                }
+            }
+        } catch {}
+    }
+    return @($roots)
+}
+
+function Test-SkipDirV16 {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $true }
+    $p = $Path.ToLowerInvariant()
+    $skip = @("\windows\winsxs", "\windows\servicing", "\windows\softwaredistribution", "\windows\installer", "\program files\windowsapps", '\$recycle.bin', "\system volume information", "\node_modules", "\.git", "\appdata\local\microsoft\edge\user data\default\cache", "\appdata\local\google\chrome\user data\default\cache")
+    foreach ($s in $skip) { if ($p.Contains($s)) { return $true } }
+    return $false
+}
+
+function Get-RootBudgetV16 {
+    param([string]$Root)
+    $r = ([string]$Root).ToLowerInvariant()
+    if ($r.Contains(".minecraft") -or $r.Contains("tlauncher") -or $r.Contains("prismlauncher") -or $r.Contains("polymc") -or $r.Contains("multimc") -or $r.Contains("gdlauncher") -or $r.Contains("atlauncher") -or $r.Contains("modrinth") -or $r.Contains("curseforge")) { return 650 }
+    if ($r.Contains("\downloads") -or $r.Contains("\desktop") -or $r.Contains("\temp")) { return 420 }
+    if ($r.Contains("\windows\system32") -or $r.Contains("\windows\syswow64")) { return 220 }
+    if ($r -match "^[a-z]:\\$") { return 160 }
+    if ($r.Contains("\program files")) { return 240 }
+    return 260
+}
+
+function Search-FileSystemCandidates {
+    Write-NeonV16 "  turbo file hunt: bounded priority walk, EXE/DLL/JAR only" "Cyan"
+    $roots = Get-FastRootSetV16
+    foreach ($r in ($roots | Select-Object -First 22)) { Write-NeonV16 ("    root: " + $r) "DarkGray" }
+    if ($roots.Count -gt 22) { Write-NeonV16 ("    + " + ($roots.Count - 22) + " more priority roots") "DarkGray" }
+    foreach ($root in $roots) {
+        if (Test-Deadline) { break }
+        if ($script:CandidatesSeen -ge $MaxCandidates) { break }
+        if (Test-SkipDirV16 $root) { continue }
+        $localFound = 0
+        $dirSeen = 0
+        $dirCap = [Math]::Max(120, [Math]::Min(1200, (Get-RootBudgetV16 $root) * 3))
+        $fileCap = Get-RootBudgetV16 $root
+        $stack = New-Object System.Collections.Generic.Stack[string]
+        try { $stack.Push($root) } catch { continue }
+        while ($stack.Count -gt 0 -and -not (Test-Deadline) -and $script:CandidatesSeen -lt $MaxCandidates -and $localFound -lt $fileCap -and $dirSeen -lt $dirCap) {
+            $dir = $stack.Pop()
+            if (Test-SkipDirV16 $dir) { continue }
+            $dirSeen++
+            try {
+                foreach ($fp in [System.IO.Directory]::EnumerateFiles($dir)) {
+                    if (Test-Deadline) { break }
+                    if ($script:CandidatesSeen -ge $MaxCandidates -or $localFound -ge $fileCap) { break }
+                    try {
+                        $ext = [System.IO.Path]::GetExtension($fp).ToLowerInvariant()
+                        if ($ext -ne ".exe" -and $ext -ne ".dll" -and $ext -ne ".jar") { continue }
+                        $fi = New-Object System.IO.FileInfo($fp)
+                        if (Should-PreCandidate -File $fi) {
+                            $script:CandidatesSeen++
+                            $localFound++
+                            Analyze-FileCandidate -Path $fp -Source "turbo_fs"
+                        }
+                    } catch { $script:BlockedErrors++ }
+                }
+            } catch { $script:BlockedErrors++ }
+            try {
+                foreach ($sub in [System.IO.Directory]::EnumerateDirectories($dir)) {
+                    if ($dirSeen -ge $dirCap -or (Test-Deadline)) { break }
+                    if (Test-SkipDirV16 $sub) { continue }
+                    $name = [System.IO.Path]::GetFileName($sub).ToLowerInvariant()
+                    if ($name -match "minecraft|launcher|client|loader|mod|mods|versions|libraries|java|jre|jdk|temp|download|desktop|appdata|programs|games|cheat|inject|click|system32|syswow64|drivers") { $stack.Push($sub) } elseif ($FullSystem -or $AllDrives) { if ($dirSeen -lt 180) { $stack.Push($sub) } }
+                }
+            } catch { $script:BlockedErrors++ }
+        }
+        if ($localFound -gt 0) { Write-NeonV16 ("    scanned: " + (Truncate-UiText $root 70) + " -> candidates " + $localFound) "DarkGray" }
+    }
+}
+
+function Analyze-SystemFolderAnomalies {
+    if (-not ($FullSystem -or $AllDrives -or $HuntSystem32)) { return }
+    Write-NeonV16 "  system anomaly hunt: fast top-level + sensitive subfolders" "Cyan"
+    $roots = @((Join-Path $env:WINDIR "System32"), (Join-Path $env:WINDIR "SysWOW64"), (Join-Path $env:WINDIR "System32\drivers"), (Join-Path $env:WINDIR "Temp")) | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
+    $limit = [Math]::Min(420, [Math]::Max(160, [int]($MaxCandidates / 8)))
+    foreach ($root in $roots) {
+        if (Test-Deadline) { break }
+        try {
+            foreach ($f in [System.IO.Directory]::EnumerateFiles($root)) {
+                if (Test-Deadline) { break }
+                if ($script:SystemAnomaliesChecked -ge $limit) { break }
+                try {
+                    $ext = [System.IO.Path]::GetExtension($f).ToLowerInvariant()
+                    if ($ext -ne ".exe" -and $ext -ne ".dll" -and $ext -ne ".sys") { continue }
+                    $fi = New-Object System.IO.FileInfo($f)
+                    $text = $fi.Name + " " + $fi.FullName
+                    $hits = Test-AnyTokenInText -Text $text -Tokens $script:CriticalCheatTokens
+                    $recent = ($fi.LastWriteTime -gt (Get-Date).AddDays(-60))
+                    if ($hits.Count -eq 0 -and -not $recent -and $ext -ne ".sys") { continue }
+                    $script:SystemAnomaliesChecked++
+                    Analyze-FileCandidate -Path $fi.FullName -Source "system32_turbo"
+                } catch { $script:BlockedErrors++ }
+            }
+        } catch { $script:BlockedErrors++ }
+    }
+}
+
+function Invoke-AutonomousForensicsV12 {
+    Write-NeonV16 "  fast forensics: DNS/BITS/Firewall/Pipes/JavaAttach/LWJGL/anti-evasion" "White"
+    Analyze-DNSCacheV12
+    Analyze-BitsJobsV12
+    Analyze-FirewallRulesV12
+    Analyze-NamedPipesV12
+    Analyze-JavaAttachArtifactsV12
+    Analyze-LwjglIntegrityV12
+    Analyze-ProcessParentAndAntiEvasionV12
+    if ((Get-SecondsLeftV16) -gt 110 -and -not $NoHeavyForensics) { Analyze-USNJournalLiteV12 }
+    if ((Get-SecondsLeftV16) -gt 75) { Analyze-AppCompatAndPcaTracesV12 }
+}
+
+function Invoke-AutonomousForensicsV13 {
+    Write-NeonV16 "  extended fast modules: HWID/USB/WMI/kdmapper/macros/browser/discord" "White"
+    Analyze-HWIDSpoofingV13
+    Analyze-KDMapperAndVulnerableDriverTracesV13
+    Analyze-USBForensicsV13
+    Analyze-WMIAndIFEOPersistenceV13
+    Analyze-PeripheralMacroProfilesV13
+    if ((Get-SecondsLeftV16) -gt 95) { Analyze-BrowserDownloadTracesV13 }
+    if ((Get-SecondsLeftV16) -gt 75) { Analyze-DiscordCacheV13 }
+}
+
+function Show-FinalVerdict {
+    $elapsed = [int]((Get-Date) - $script:StartTime).TotalSeconds
+    $sorted = @($script:Findings | Sort-Object Score -Descending)
+    $critical = @($sorted | Where-Object { $_.Severity -eq "CRITICAL" }).Count
+    $high = @($sorted | Where-Object { $_.Severity -eq "HIGH" }).Count
+    $medium = @($sorted | Where-Object { $_.Severity -eq "MEDIUM" }).Count
+    $low = @($sorted | Where-Object { $_.Severity -eq "LOW" }).Count
+    $verdict = "CLEAN"
+    $vcolor = "Green"
+    if ($critical -gt 0) { $verdict = "CHEAT LIKELY"; $vcolor = "Red" } elseif ($high -gt 0) { $verdict = "SUSPICIOUS"; $vcolor = "Yellow" } elseif ($medium -gt 0) { $verdict = "WEAK SIGNALS"; $vcolor = "Cyan" }
+    Write-NeonV16 "" "DarkGray"
+    Write-UiRule "FINAL NEON DASHBOARD" $vcolor
+    $riskMax = [Math]::Max(1, (@($critical,$high,$medium,$low) | Measure-Object -Maximum).Maximum)
+    Write-NeonBoxV16 "VERDICT" @(
+        "Result: " + $verdict,
+        "Runtime: " + $elapsed + " sec | target: <= 300 sec | phase: " + $script:UiLastStatus,
+        "Critical: " + $critical + " | High: " + $high + " | Medium: " + $medium + " | Low: " + $low,
+        "Candidates: " + $script:CandidatesSeen + " | analyzed: " + $script:FilesAnalyzed + " | trusted ignored: " + $script:TrustedIgnoredCount,
+        "No permanent report was created. Temp workspace is removed on exit."
+    ) $vcolor
+    Write-UiRule "RISK BARS" "White"
+    Write-UiBarLine "CRITICAL" $critical $riskMax "Red"
+    Write-UiBarLine "HIGH" $high $riskMax "Yellow"
+    Write-UiBarLine "MEDIUM" $medium $riskMax "Cyan"
+    Write-UiBarLine "LOW" $low $riskMax "DarkGray"
+    Write-UiRule "FAST FORENSIC COUNTERS" "White"
+    Write-NeonV16 ("  DNS=" + $script:DNSCacheCount + " BITS=" + $script:BitsJobCount + " Firewall=" + $script:FirewallRuleCount + " Pipes=" + $script:NamedPipeCount + " JavaAttach=" + $script:JavaAttachCount + " USN=" + $script:USNTraceCount) "DarkGray"
+    Write-NeonV16 ("  HWID=" + $script:HWIDAnomalyCount + " USB=" + $script:USBTraceCount + " WMI=" + $script:WMIPersistenceCount + " Browser=" + $script:BrowserTraceCount + " Discord=" + $script:DiscordTraceCount + " Macros=" + $script:MacroProfileCount + " KDMapper=" + $script:KDMapperTraceCount) "DarkGray"
+    $topItems = @($sorted | Select-Object -First ([Math]::Min($Top, 25)))
+    if ($topItems.Count -gt 0) {
+        Write-UiRule "TOP EVIDENCE" "Magenta"
+        $i = 1
+        foreach ($f in $topItems) {
+            Print-FindingBlock -F $f -Index $i
+            $i++
+        }
+    } else {
+        Write-NeonBoxV16 "TOP EVIDENCE" @("No strong cheat indicators were found by the local evidence engine.") "Green"
+    }
+    if ($ShowIgnored -and $script:Ignored.Count -gt 0) {
+        Write-UiRule "IGNORED TRUSTED / WEAK" "DarkGray"
+        $j = 1
+        foreach ($x in ($script:Ignored | Sort-Object Score -Descending | Select-Object -First 18)) { Print-FindingBlock -F $x -Index $j; $j++ }
+    }
+}
+
+function Main {
+    if ($SelfTest) { Test-SelfSyntax }
+    $script:Version = "16.0.0"
+    $script:StartTime = Get-Date
+    $script:UiNoProgress = $true
+    $script:UiWidth = [Math]::Max(96, [Math]::Min(150, $UiWidth))
+    $targetMinutes = [Math]::Min(5, [Math]::Max(3, [int]$MaxMinutes))
+    Set-Variable -Name MaxMinutes -Scope Script -Value $targetMinutes
+    if ($MaxCandidates -gt 3200) { Set-Variable -Name MaxCandidates -Scope Script -Value 3200 }
+    if ($Fast) { Set-Variable -Name MaxCandidates -Scope Script -Value ([Math]::Min($MaxCandidates, 1400)) }
+    if ($FullSystem) {
+        Set-Variable -Name Deep -Scope Script -Value $true
+        Set-Variable -Name Forensic -Scope Script -Value $true
+        Set-Variable -Name HuntSystem32 -Scope Script -Value $true
+        Set-Variable -Name AllDrives -Scope Script -Value $true
+    }
+    if ($Fast) { Set-Variable -Name Forensic -Scope Script -Value $true }
+    $script:Deadline = (Get-Date).AddMinutes($MaxMinutes)
+    Initialize-Workspace
+    $adminProbe = Test-IsAdministratorV15
+    $script:IsElevated = [bool]$adminProbe.IsAdmin
+    $script:AdminMethod = [string]$adminProbe.Method
+    $script:AdminChecks = [string]$adminProbe.Checks
+    Show-Banner
+    if ($OpenReport) { Write-NeonV16 "  OpenReport accepted for compatibility; permanent reports stay disabled." "Yellow" }
+    Start-UiPhase "Brain model" "tokens, trusted vendors and false-positive gate"
+    Initialize-BrainTokens
+    Write-NeonV16 ("  Mode: Fast=" + [bool]$Fast + " Deep=" + [bool]$Deep + " FullSystem=" + [bool]$FullSystem + " AllDrives=" + [bool]$AllDrives + " OnlyMinecraft=" + [bool]$OnlyMinecraft) "White"
+    Write-NeonV16 ("  Hard limit: " + $MaxMinutes + " min | candidates: " + $MaxCandidates + " | strict evidence: " + [bool]$StrictEvidence) "DarkGray"
+    Start-UiPhase "Live execution" "processes, command lines, parent chains, java and modules"
+    Analyze-RunningProcesses
+    Analyze-ProcessModules
+    Start-UiPhase "Persistence" "autoruns, tasks, IFEO, WMI, services and uninstall traces"
+    Analyze-AutorunsRegistry
+    Analyze-ScheduledTasksDeep
+    Analyze-IFEODeep
+    Analyze-WMIAndIFEOPersistenceV13
+    Start-UiPhase "Network layer" "hosts, TCP, DNS, BITS, firewall, named pipes"
+    Analyze-HostsNetworkAndDrivers
+    Analyze-DNSCacheV12
+    Analyze-BitsJobsV12
+    Analyze-FirewallRulesV12
+    Analyze-NamedPipesV12
+    Start-UiPhase "Minecraft core" "java attach, LWJGL natives, logs and execution traces"
+    Analyze-JavaAttachArtifactsV12
+    Analyze-LwjglIntegrityV12
+    Analyze-DeletedAndExecutionTraces
+    Start-UiPhase "Device forensics" "HWID, USB, kdmapper, vulnerable drivers, macros"
+    Analyze-HWIDSpoofingV13
+    Analyze-KDMapperAndVulnerableDriverTracesV13
+    Analyze-USBForensicsV13
+    Analyze-PeripheralMacroProfilesV13
+    Start-UiPhase "System anomaly" "System32/SysWOW64 quick hunt and anti-evasion context"
+    Analyze-ProcessParentAndAntiEvasionV12
+    Analyze-SystemFolderAnomalies
+    Analyze-VMIndicators
+    Start-UiPhase "Priority file hunt" "bounded all-drive search with AI prefilter"
+    Search-FileSystemCandidates
+    Start-UiPhase "Deep signals" "ADS, entropy, browser, Discord, optional engines if time remains"
+    Analyze-AlternateDataStreamsForCandidates
+    if ((Get-SecondsLeftV16) -gt 70) { Analyze-BrowserDownloadTracesV13 }
+    if ((Get-SecondsLeftV16) -gt 55) { Analyze-DiscordCacheV13 }
+    if ((Get-SecondsLeftV16) -gt 40) { Invoke-YaraOptional; Invoke-AmsiOptional; Invoke-VirusTotalOptional }
+    Start-UiPhase "Behavior chains" "correlating USB/browser/deleted traces/java/network/system anomalies"
+    Analyze-BehavioralChainsV12
+    Analyze-BehavioralChainsV13
+    Start-UiPhase "Final dashboard" "verdict, risk bars and evidence cards"
+    Show-FinalVerdict
+}
+
+
+$script:Version = "17.0.0"
+$script:UiPhaseTotal = 11
+$script:ScreenSignals = New-Object System.Collections.Generic.List[object]
+
+function Write-StarV17 {
+    param([string]$Text = "", [string]$Color = "Gray", [switch]$NoNewline)
+    try {
+        if ($script:UiNoColor) { $Color = "Gray" }
+        if ($NoNewline) { Write-Host $Text -ForegroundColor $Color -NoNewline } else { Write-Host $Text -ForegroundColor $Color }
+    } catch { Write-Host $Text }
+}
+
+function New-UiLineV17 {
+    param([string]$Left, [string]$Right = "", [int]$Width = 130)
+    $w = [Math]::Max(96, [Math]::Min(150, $Width))
+    $inner = $w - 4
+    $l = ([string]$Left) -replace "`r|`n|`t", " "
+    $r = ([string]$Right) -replace "`r|`n|`t", " "
+    if ($r.Length -gt 0) {
+        $space = $inner - $l.Length - $r.Length
+        if ($space -lt 1) {
+            $maxLeft = [Math]::Max(10, $inner - $r.Length - 4)
+            if ($l.Length -gt $maxLeft) { $l = $l.Substring(0, $maxLeft) + "..." }
+            $space = [Math]::Max(1, $inner - $l.Length - $r.Length)
+        }
+        return "| " + $l + (" " * $space) + $r + " |"
+    }
+    if ($l.Length -gt $inner) { $l = $l.Substring(0, $inner-3) + "..." }
+    return "| " + $l.PadRight($inner) + " |"
+}
+
+function Write-CosmicBoxV17 {
+    param([string]$Title, [string[]]$Lines, [string]$Color = "Magenta")
+    $w = [Math]::Max(96, [Math]::Min(150, $script:UiWidth))
+    $bar = "*" + ("=" * ($w-2)) + "*"
+    Write-StarV17 $bar $Color
+    $t = " " + $Title + " "
+    if ($t.Length -gt ($w-4)) { $t = $t.Substring(0,$w-7) + "..." }
+    $left = [Math]::Max(0, [int](($w-2-$t.Length)/2))
+    $right = [Math]::Max(0, $w-2-$left-$t.Length)
+    Write-StarV17 ("|" + (" "*$left) + $t + (" "*$right) + "|") $Color
+    Write-StarV17 ("+" + ("-" * ($w-2)) + "+") "DarkGray"
+    foreach ($line in @($Lines)) { Write-StarV17 (New-UiLineV17 $line "" $w) "Gray" }
+    Write-StarV17 $bar $Color
+}
+
+function Get-CosmicAdminTextV17 {
+    if ($script:IsElevated) { return "YES :: " + $script:AdminMethod }
+    return "NO :: limited providers"
+}
+
+function Show-Banner {
+    Clear-Host
+    $mode = if ($FullSystem) { "FULLSYSTEM" } elseif ($Deep) { "DEEP" } elseif ($Fast) { "FAST" } else { "SMART" }
+    $adminState = Get-CosmicAdminTextV17
+    $privacy = if ($NoScreenPrivacyGuard) { "OFF" } else { "ON / " + $ScreenGuardMode.ToUpperInvariant() }
+    Write-StarV17 "" "DarkGray"
+    Write-StarV17 "        .        *        .      Y R Y S   C H E C K E R       .        *        ." "DarkMagenta"
+    Write-StarV17 "    ____  _   _ _____ ____  _  __    ____ ___  ____  _____     ____ ___  ____  _____" "Red"
+    Write-StarV17 "   / ___|| | | | ____/ ___|| |/ /   / ___/ _ \|  _ \| ____|   / ___/ _ \|  _ \| ____|" "Red"
+    Write-StarV17 "   \___ \| |_| |  _|| |    | ' /   | |  | | | | |_) |  _|    | |  | | | | |_) |  _|" "Magenta"
+    Write-StarV17 "    ___) |  _  | |__| |___ | . \   | |__| |_| |  _ <| |___   | |__| |_| |  _ <| |___" "Magenta"
+    Write-StarV17 "   |____/|_| |_|_____\____||_|\_\   \____\___/|_| \_\_____|   \____\___/|_| \_\_____|" "DarkRed"
+    Write-StarV17 "" "DarkGray"
+    Write-CosmicBoxV17 "COSMIC CONTROL v17.0 :: FIVE-MINUTE AUTONOMOUS FORENSIC AI" @(
+        "MODE " + $mode + "    TIME " + $MaxMinutes + "m    CANDIDATES " + $MaxCandidates + "    WIDTH " + $script:UiWidth,
+        "ADMIN " + $adminState,
+        "SCREEN PRIVACY GUARD " + $privacy,
+        "UI engine: stable ASCII cosmic cards, no Write-Progress overlay, no permanent reports",
+        "Workspace: temporary only; removed automatically at shutdown"
+    ) "Magenta"
+    if (-not $script:IsElevated) {
+        Write-CosmicBoxV17 "ADMIN PROVIDER WARNING" @(
+            "Elevated token was not confirmed by Windows APIs.",
+            "The scan continues with fallbacks, but protected providers may be partial.",
+            "Run Windows Terminal or PowerShell as Administrator for full driver, prefetch and process coverage."
+        ) "Yellow"
+    }
+}
+
+function Get-ScreenProcessRulesV17 {
+    return @(
+        [pscustomobject]@{ Name="obs64"; Label="OBS Studio"; Type="screen_recorder"; Score=95; Color="Red" },
+        [pscustomobject]@{ Name="obs32"; Label="OBS Studio"; Type="screen_recorder"; Score=95; Color="Red" },
+        [pscustomobject]@{ Name="streamlabs"; Label="Streamlabs"; Type="screen_recorder"; Score=95; Color="Red" },
+        [pscustomobject]@{ Name="xsplit"; Label="XSplit"; Type="screen_recorder"; Score=90; Color="Red" },
+        [pscustomobject]@{ Name="bandicam"; Label="Bandicam"; Type="screen_recorder"; Score=90; Color="Red" },
+        [pscustomobject]@{ Name="camtasia"; Label="Camtasia"; Type="screen_recorder"; Score=85; Color="Yellow" },
+        [pscustomobject]@{ Name="sharex"; Label="ShareX"; Type="screen_capture"; Score=80; Color="Yellow" },
+        [pscustomobject]@{ Name="screenrec"; Label="ScreenRec"; Type="screen_recorder"; Score=85; Color="Yellow" },
+        [pscustomobject]@{ Name="loom"; Label="Loom"; Type="screen_recorder"; Score=75; Color="Yellow" },
+        [pscustomobject]@{ Name="medal"; Label="Medal"; Type="clip_recorder"; Score=72; Color="Yellow" },
+        [pscustomobject]@{ Name="outplayed"; Label="Outplayed"; Type="clip_recorder"; Score=72; Color="Yellow" },
+        [pscustomobject]@{ Name="overwolf"; Label="Overwolf"; Type="overlay_capture"; Score=65; Color="Cyan" },
+        [pscustomobject]@{ Name="gamebar"; Label="Xbox Game Bar"; Type="capture_capable"; Score=60; Color="Cyan" },
+        [pscustomobject]@{ Name="gamebarpresencewriter"; Label="Xbox Game Bar Presence"; Type="capture_capable"; Score=50; Color="Cyan" },
+        [pscustomobject]@{ Name="nvidia share"; Label="NVIDIA Share"; Type="capture_capable"; Score=55; Color="Cyan" },
+        [pscustomobject]@{ Name="nvsphelper64"; Label="NVIDIA ShadowPlay"; Type="capture_capable"; Score=55; Color="Cyan" },
+        [pscustomobject]@{ Name="discord"; Label="Discord"; Type="screen_share_capable"; Score=45; Color="DarkCyan" },
+        [pscustomobject]@{ Name="discordcanary"; Label="Discord Canary"; Type="screen_share_capable"; Score=45; Color="DarkCyan" },
+        [pscustomobject]@{ Name="discordptb"; Label="Discord PTB"; Type="screen_share_capable"; Score=45; Color="DarkCyan" },
+        [pscustomobject]@{ Name="teams"; Label="Microsoft Teams"; Type="screen_share_capable"; Score=45; Color="DarkCyan" },
+        [pscustomobject]@{ Name="zoom"; Label="Zoom"; Type="screen_share_capable"; Score=45; Color="DarkCyan" },
+        [pscustomobject]@{ Name="anydesk"; Label="AnyDesk"; Type="remote_control"; Score=80; Color="Yellow" },
+        [pscustomobject]@{ Name="teamviewer"; Label="TeamViewer"; Type="remote_control"; Score=75; Color="Yellow" },
+        [pscustomobject]@{ Name="rustdesk"; Label="RustDesk"; Type="remote_control"; Score=75; Color="Yellow" },
+        [pscustomobject]@{ Name="parsecd"; Label="Parsec"; Type="remote_control"; Score=70; Color="Yellow" }
+    )
+}
+
+function Get-ProcessSnapshotForScreenV17 {
+    $items = New-Object System.Collections.Generic.List[object]
+    try {
+        foreach ($p in Get-CimInstance Win32_Process -ErrorAction Stop) {
+            [void]$items.Add([pscustomobject]@{ Name=[string]$p.Name; ProcessId=[int]$p.ProcessId; Path=[string]$p.ExecutablePath; CommandLine=[string]$p.CommandLine })
+        }
+        return @($items)
+    } catch {}
+    try {
+        foreach ($p in Get-Process -ErrorAction SilentlyContinue) {
+            [void]$items.Add([pscustomobject]@{ Name=[string]$p.ProcessName; ProcessId=[int]$p.Id; Path=""; CommandLine="" })
+        }
+    } catch {}
+    return @($items)
+}
+
+function Analyze-ScreenPrivacyGuardV17 {
+    if ($NoScreenPrivacyGuard) { return }
+    $script:ScreenSignals.Clear()
+    $rules = Get-ScreenProcessRulesV17
+    $processes = Get-ProcessSnapshotForScreenV17
+    foreach ($p in @($processes)) {
+        $name = ([string]$p.Name).ToLowerInvariant()
+        $cmd = ([string]$p.CommandLine).ToLowerInvariant()
+        foreach ($r in $rules) {
+            $rn = ([string]$r.Name).ToLowerInvariant()
+            if ($name -eq $rn -or $name -eq ($rn + ".exe") -or $name.Contains($rn) -or $cmd.Contains($rn)) {
+                $obj = [pscustomobject]@{ Label=$r.Label; Process=$p.Name; Pid=$p.ProcessId; Type=$r.Type; Score=$r.Score; Path=$p.Path; Color=$r.Color }
+                [void]$script:ScreenSignals.Add($obj)
+                break
+            }
+        }
+    }
+    if ($script:ScreenSignals.Count -eq 0) {
+        Write-CosmicBoxV17 "SCREEN PRIVACY GUARD" @("No active screen recorder, screen share app or remote-control process was detected by process scan.") "Green"
+        return
+    }
+    $top = @($script:ScreenSignals | Sort-Object Score -Descending | Select-Object -First 8)
+    $lines = New-Object System.Collections.Generic.List[string]
+    [void]$lines.Add("Detected capture-capable or remote-control processes. Nothing is forcibly closed.")
+    foreach ($x in $top) {
+        [void]$lines.Add(("[" + $x.Score + "] " + $x.Label + " :: " + $x.Type + " :: PID " + $x.Pid + " :: " + $x.Process))
+    }
+    if ($script:ScreenSignals.Count -gt $top.Count) { [void]$lines.Add("+ " + ($script:ScreenSignals.Count - $top.Count) + " more screen/capture-capable process signals") }
+    if ($ScreenGuardMode -eq "Pause") { [void]$lines.Add("Mode PAUSE: scan waits " + $ScreenGuardPauseSeconds + " seconds so the user can stop sharing manually.") }
+    if ($ScreenGuardMode -eq "Exit") { [void]$lines.Add("Mode EXIT: scan stops now because capture-capable software is present.") }
+    Write-CosmicBoxV17 "SCREEN PRIVACY GUARD" @($lines) "Yellow"
+    foreach ($x in $top) {
+        if ([int]$x.Score -ge 75) {
+            Add-Finding -Object ($x.Label + " PID " + $x.Pid) -ObjectType "SCREEN_PRIVACY" -Score ([int]$x.Score) -Severity (Convert-ScoreToSeverity ([int]$x.Score)) -Class "screen_capture_context" -Evidence @("screen capture capable process is running", "process type: " + $x.Type, "privacy context only; not a cheat proof")
+        }
+    }
+    if ($ScreenGuardMode -eq "Pause") {
+        try { Start-Sleep -Seconds ([Math]::Max(3, [Math]::Min(90, $ScreenGuardPauseSeconds))) } catch {}
+    }
+    if ($ScreenGuardMode -eq "Exit") {
+        throw "ScreenPrivacyGuardExit"
+    }
+}
+
+function Print-FindingBlock {
+    param([object]$F, [int]$Index)
+    $color = Get-UiColorForSeverity $F.Severity
+    if ($F.ObjectType -eq "SCREEN_PRIVACY") { $color = "Yellow" }
+    $w = [Math]::Max(96, [Math]::Min(150, $script:UiWidth))
+    $bar = "*" + ("=" * ($w-2)) + "*"
+    $title = "#" + $Index + "  " + $F.Severity + "  SCORE " + $F.Score + "  CONF " + $F.Confidence
+    if ($script:UiCompact) {
+        Write-StarV17 (("[" + $Index + "] " + $F.Severity + " score=" + $F.Score + " class=" + $F.Class + " :: " + (Truncate-UiText $F.Object 95))) $color
+        return
+    }
+    Write-StarV17 $bar $color
+    Write-StarV17 (New-UiLineV17 $title ("TYPE " + $F.ObjectType) $w) $color
+    Write-StarV17 ("+" + ("-" * ($w-2)) + "+") "DarkGray"
+    Write-StarV17 (New-UiLineV17 ("CLASS " + $F.Class) ("TRACE " + [bool]$F.DeletedTrace) $w) "Gray"
+    Write-StarV17 (New-UiLineV17 ("OBJECT " + $F.Object) "" $w) "White"
+    if ($F.Sha256) { Write-StarV17 (New-UiLineV17 ("SHA256 " + $F.Sha256) "" $w) "DarkGray" }
+    try {
+        $profile = $F.EvidenceProfile
+        if ($profile.Positive.Count -gt 0) {
+            Write-StarV17 (New-UiLineV17 "EVIDENCE" "" $w) "Cyan"
+            foreach ($e in ($profile.Positive | Select-Object -First 7)) { Write-StarV17 (New-UiLineV17 (" + " + $e) "" $w) "Gray" }
+        }
+        if ($profile.Context.Count -gt 0) {
+            Write-StarV17 (New-UiLineV17 "CONTEXT" "" $w) "DarkCyan"
+            foreach ($e in ($profile.Context | Select-Object -First 4)) { Write-StarV17 (New-UiLineV17 (" ~ " + $e) "" $w) "DarkGray" }
+        }
+        if ($profile.Mitigation.Count -gt 0) {
+            Write-StarV17 (New-UiLineV17 "LOWERS RISK" "" $w) "Green"
+            foreach ($e in ($profile.Mitigation | Select-Object -First 4)) { Write-StarV17 (New-UiLineV17 (" - " + $e) "" $w) "DarkGray" }
+        }
+    } catch {
+        foreach ($e in (@($F.Evidence) | Select-Object -First 7)) { Write-StarV17 (New-UiLineV17 (" + " + $e) "" $w) "Gray" }
+    }
+    if ($F.Recommendation) { Write-StarV17 (New-UiLineV17 ("NEXT " + $F.Recommendation) "" $w) "White" }
+    Write-StarV17 $bar $color
+}
+
+function Show-FinalVerdict {
+    $elapsed = [int]((Get-Date) - $script:StartTime).TotalSeconds
+    $sorted = @($script:Findings | Sort-Object Score -Descending)
+    $critical = @($sorted | Where-Object { $_.Severity -eq "CRITICAL" }).Count
+    $high = @($sorted | Where-Object { $_.Severity -eq "HIGH" }).Count
+    $medium = @($sorted | Where-Object { $_.Severity -eq "MEDIUM" }).Count
+    $low = @($sorted | Where-Object { $_.Severity -eq "LOW" }).Count
+    $privacyCount = $script:ScreenSignals.Count
+    $verdict = "CLEAN"
+    $vcolor = "Green"
+    if ($critical -gt 0) { $verdict = "CHEAT LIKELY"; $vcolor = "Red" } elseif ($high -gt 0) { $verdict = "SUSPICIOUS"; $vcolor = "Yellow" } elseif ($medium -gt 0) { $verdict = "WEAK SIGNALS"; $vcolor = "Cyan" }
+    Write-StarV17 "" "DarkGray"
+    Write-UiRule "COSMIC FINAL DASHBOARD" $vcolor
+    Write-CosmicBoxV17 "VERDICT" @(
+        "RESULT " + $verdict + "    RUNTIME " + $elapsed + " sec    TARGET <= 300 sec",
+        "CRITICAL " + $critical + "    HIGH " + $high + "    MEDIUM " + $medium + "    LOW " + $low,
+        "CANDIDATES " + $script:CandidatesSeen + "    ANALYZED " + $script:FilesAnalyzed + "    TRUSTED IGNORED " + $script:TrustedIgnoredCount,
+        "SCREEN PRIVACY SIGNALS " + $privacyCount + "    ADMIN " + (Get-CosmicAdminTextV17),
+        "No permanent report was created. Temporary workspace is removed on exit."
+    ) $vcolor
+    Write-UiRule "RISK BARS" "White"
+    $riskMax = [Math]::Max(1, (@($critical,$high,$medium,$low) | Measure-Object -Maximum).Maximum)
+    Write-UiBarLine "CRITICAL" $critical $riskMax "Red"
+    Write-UiBarLine "HIGH" $high $riskMax "Yellow"
+    Write-UiBarLine "MEDIUM" $medium $riskMax "Cyan"
+    Write-UiBarLine "LOW" $low $riskMax "DarkGray"
+    Write-UiRule "FORENSIC COUNTERS" "White"
+    Write-StarV17 ("  DNS=" + $script:DNSCacheCount + " BITS=" + $script:BitsJobCount + " Firewall=" + $script:FirewallRuleCount + " Pipes=" + $script:NamedPipeCount + " JavaAttach=" + $script:JavaAttachCount + " USN=" + $script:USNTraceCount) "DarkGray"
+    Write-StarV17 ("  HWID=" + $script:HWIDAnomalyCount + " USB=" + $script:USBTraceCount + " WMI=" + $script:WMIPersistenceCount + " Browser=" + $script:BrowserTraceCount + " Discord=" + $script:DiscordTraceCount + " Macros=" + $script:MacroProfileCount + " KDMapper=" + $script:KDMapperTraceCount) "DarkGray"
+    $topItems = @($sorted | Select-Object -First ([Math]::Min($Top, 28)))
+    if ($topItems.Count -gt 0) {
+        Write-UiRule "TOP EVIDENCE CARDS" "Magenta"
+        $i = 1
+        foreach ($f in $topItems) { Print-FindingBlock -F $f -Index $i; $i++ }
+    } else {
+        Write-CosmicBoxV17 "TOP EVIDENCE" @("No strong cheat indicators were found by the local evidence engine.") "Green"
+    }
+    if ($ShowIgnored -and $script:Ignored.Count -gt 0) {
+        Write-UiRule "IGNORED TRUSTED / WEAK" "DarkGray"
+        $j = 1
+        foreach ($x in ($script:Ignored | Sort-Object Score -Descending | Select-Object -First 18)) { Print-FindingBlock -F $x -Index $j; $j++ }
+    }
+}
+
+function Main {
+    if ($SelfTest) { Test-SelfSyntax }
+    $script:Version = "17.0.0"
+    $script:StartTime = Get-Date
+    $script:UiNoProgress = $true
+    $script:UiWidth = [Math]::Max(100, [Math]::Min(150, $UiWidth))
+    $targetMinutes = [Math]::Min(5, [Math]::Max(3, [int]$MaxMinutes))
+    Set-Variable -Name MaxMinutes -Scope Script -Value $targetMinutes
+    if ($MaxCandidates -gt 3400) { Set-Variable -Name MaxCandidates -Scope Script -Value 3400 }
+    if ($Fast) { Set-Variable -Name MaxCandidates -Scope Script -Value ([Math]::Min($MaxCandidates, 1500)) }
+    if ($FullSystem) {
+        Set-Variable -Name Deep -Scope Script -Value $true
+        Set-Variable -Name Forensic -Scope Script -Value $true
+        Set-Variable -Name HuntSystem32 -Scope Script -Value $true
+        Set-Variable -Name AllDrives -Scope Script -Value $true
+    }
+    if ($Fast) { Set-Variable -Name Forensic -Scope Script -Value $true }
+    $script:Deadline = (Get-Date).AddMinutes($MaxMinutes)
+    Initialize-Workspace
+    $adminProbe = Test-IsAdministratorV15
+    $script:IsElevated = [bool]$adminProbe.IsAdmin
+    $script:AdminMethod = [string]$adminProbe.Method
+    $script:AdminChecks = [string]$adminProbe.Checks
+    Show-Banner
+    if ($OpenReport) { Write-StarV17 "  OpenReport accepted for compatibility; permanent reports stay disabled." "Yellow" }
+    Start-UiPhase "Screen privacy" "detecting active recorder, screen-share and remote-control processes"
+    Analyze-ScreenPrivacyGuardV17
+    Start-UiPhase "Brain model" "tokens, trusted vendors and false-positive gate"
+    Initialize-BrainTokens
+    Write-StarV17 ("  Mode: Fast=" + [bool]$Fast + " Deep=" + [bool]$Deep + " FullSystem=" + [bool]$FullSystem + " AllDrives=" + [bool]$AllDrives + " OnlyMinecraft=" + [bool]$OnlyMinecraft) "White"
+    Write-StarV17 ("  Hard limit: " + $MaxMinutes + " min | candidates: " + $MaxCandidates + " | strict evidence: " + [bool]$StrictEvidence) "DarkGray"
+    Start-UiPhase "Live execution" "processes, command lines, parent chains, java and modules"
+    Analyze-RunningProcesses
+    Analyze-ProcessModules
+    Start-UiPhase "Persistence" "autoruns, tasks, IFEO, WMI, services and uninstall traces"
+    Analyze-AutorunsRegistry
+    Analyze-ScheduledTasksDeep
+    Analyze-IFEODeep
+    Analyze-WMIAndIFEOPersistenceV13
+    Start-UiPhase "Network layer" "hosts, TCP, DNS, BITS, firewall, named pipes"
+    Analyze-HostsNetworkAndDrivers
+    Analyze-DNSCacheV12
+    Analyze-BitsJobsV12
+    Analyze-FirewallRulesV12
+    Analyze-NamedPipesV12
+    Start-UiPhase "Minecraft core" "java attach, LWJGL natives, logs and execution traces"
+    Analyze-JavaAttachArtifactsV12
+    Analyze-LwjglIntegrityV12
+    Analyze-DeletedAndExecutionTraces
+    Start-UiPhase "Device forensics" "HWID, USB, kdmapper, vulnerable drivers, macros"
+    Analyze-HWIDSpoofingV13
+    Analyze-KDMapperAndVulnerableDriverTracesV13
+    Analyze-USBForensicsV13
+    Analyze-PeripheralMacroProfilesV13
+    Start-UiPhase "System anomaly" "System32/SysWOW64 quick hunt and anti-evasion context"
+    Analyze-ProcessParentAndAntiEvasionV12
+    Analyze-SystemFolderAnomalies
+    Analyze-VMIndicators
+    Start-UiPhase "Priority file hunt" "bounded all-drive search with AI prefilter"
+    Search-FileSystemCandidates
+    Start-UiPhase "Deep signals" "ADS, entropy, browser, Discord, optional engines if time remains"
+    Analyze-AlternateDataStreamsForCandidates
+    if ((Get-SecondsLeftV16) -gt 70) { Analyze-BrowserDownloadTracesV13 }
+    if ((Get-SecondsLeftV16) -gt 55) { Analyze-DiscordCacheV13 }
+    if ((Get-SecondsLeftV16) -gt 40) { Invoke-YaraOptional; Invoke-AmsiOptional; Invoke-VirusTotalOptional }
+    Start-UiPhase "Behavior chains" "correlating USB/browser/deleted traces/java/network/system anomalies"
+    Analyze-BehavioralChainsV12
+    Analyze-BehavioralChainsV13
+    Start-UiPhase "Final dashboard" "verdict, risk bars and evidence cards"
+    Show-FinalVerdict
+}
 
 try {
     Main
