@@ -2434,7 +2434,7 @@ function Print-FindingBlock {
     $scoreBar = Get-UiBar -Value ([int]$F.Score) -Max 160 -Width 18
     $title = ("#" + $Index + " " + $icon + " " + $F.Severity + " | score " + $F.Score + " " + $scoreBar + " | confidence " + $F.Confidence)
     if ($script:UiCompact) {
-        Write-YLine ("[" + $Index + "] " + $F.Severity + " score=" + $F.Score + " type=" + $F.ObjectType + " class=" + $F.Class) $color
+        Write-YLine ("[" + $Index + "] " + $F.Severity + " risk=" + $F.Score + " type=" + $F.ObjectType + " class=" + $F.Class) $color
         Write-YLine ("    " + (Truncate-UiText $F.Object 115)) "White"
         return
     }
@@ -2474,7 +2474,7 @@ function Show-UiQuickTriage {
     $n = 1
     foreach ($x in @($criticalItems + $highItems)) {
         $c = Get-UiColorForSeverity $x.Severity
-        Write-YLine ("  " + $n + ". " + $x.Severity.PadRight(8) + " score=" + ([string]$x.Score).PadRight(4) + " " + (Truncate-UiText $x.Object 85)) $c
+        Write-YLine ("  " + $n + ". " + $x.Severity.PadRight(8) + " risk=" + ([string]$x.Score).PadRight(4) + " " + (Truncate-UiText $x.Object 85)) $c
         $n++
     }
 }
@@ -6288,7 +6288,7 @@ function Show-Banner {
     Write-NeonV16 "        | |  |  _ <   | |  ___) |    | |___|  _  | |__| |___| . \| |___|  _ <" "Red"
     Write-NeonV16 "        |_|  |_| \_\  |_| |____/      \____|_| |_|_____\____|_|\_\_____|_| \_\" "Red"
     Write-NeonV16 "" "DarkGray"
-    Write-NeonBoxV16 "NEON CORE v16.0 :: FIVE-MINUTE FORENSIC AI" @(
+    Write-NeonBoxV16 "NEBULA v19.0 :: FIVE-MINUTE FORENSIC AI" @(
         "Mode: " + $mode + " | time budget: " + $MaxMinutes + " min | candidates cap: " + $MaxCandidates,
         "Admin: " + $adminState,
         "UI: stable ASCII neon dashboard; no PowerShell progress overlay by default",
@@ -6590,7 +6590,7 @@ function Main {
 }
 
 
-$script:Version = "18.0.0"
+$script:Version = "19.0.0"
 $script:UiPhaseTotal = 11
 $script:ScreenSignals = New-Object System.Collections.Generic.List[object]
 
@@ -6643,7 +6643,7 @@ function Get-CosmicAdminTextV17 {
 
 function Show-Banner {
     Clear-Host
-    $mode = if ($FullSystem) { "FULLSYSTEM" } elseif ($Deep) { "DEEP" } elseif ($Fast) { "FAST" } else { "CORE" }
+    $mode = if ($FullSystem) { "FULLSYSTEM" } elseif ($Deep) { "DEEP" } elseif ($Fast) { "FAST" } else { "SMART" }
     $adminState = Get-CosmicAdminTextV17
     $privacy = if ($NoScreenPrivacyGuard) { "OFF" } else { "ON" }
     Write-StarV17 "" "DarkGray"
@@ -6654,10 +6654,10 @@ function Show-Banner {
     Write-StarV17 "  | |__| |_| |  _ <| |___" "DarkGreen"
     Write-StarV17 "   \____\___/|_| \_\_____|" "Green"
     Write-StarV17 "" "DarkGray"
-    Write-CosmicBoxV17 "CORE v18.0 :: RESULTS ONLY FORENSIC AI" @(
+    Write-CosmicBoxV17 "NEBULA v19.0 :: CINEMATIC FORENSIC AI" @(
         "MODE " + $mode + "    TIME " + $MaxMinutes + "m    CANDIDATES " + $MaxCandidates,
         "ADMIN " + $adminState + "    SCREEN GUARD " + $privacy,
-        "RUNNING SILENT CORE. ONLY FINAL RESULTS WILL BE SHOWN."
+        "NEBULA HUD ENABLED. LIVE OUTPUT IS MINIMAL; FINAL EVIDENCE IS PRIORITY."
     ) "Green"
     if (-not $script:IsElevated) {
         Write-CosmicBoxV17 "ADMIN CHECK" @(
@@ -6752,9 +6752,9 @@ function Print-FindingBlock {
     if ($F.ObjectType -eq "SCREEN_PRIVACY") { $color = "Yellow" }
     $w = [Math]::Max(96, [Math]::Min(150, $script:UiWidth))
     $bar = "*" + ("=" * ($w-2)) + "*"
-    $title = "#" + $Index + "  " + $F.Severity + "  SCORE " + $F.Score + "  CONF " + $F.Confidence
+    $title = "#" + $Index + "  " + $F.Severity + "  RISK " + $F.Score + "  CONF " + $F.Confidence
     if ($script:UiCompact) {
-        Write-StarV17 (("[" + $Index + "] " + $F.Severity + " score=" + $F.Score + " class=" + $F.Class + " :: " + (Truncate-UiText $F.Object 95))) $color
+        Write-StarV17 (("[" + $Index + "] " + $F.Severity + " risk=" + $F.Score + " class=" + $F.Class + " :: " + (Truncate-UiText $F.Object 95))) $color
         return
     }
     Write-StarV17 $bar $color
@@ -6828,10 +6828,249 @@ function Show-FinalVerdict {
     }
 }
 
+function Write-YLine {
+    param([string]$Text = "", [string]$Color = "Gray", [switch]$NoNewline)
+    if ($script:AllowVerboseScanOutput) {
+        try {
+            if ($script:UiNoColor) { $Color = "Gray" }
+            if ($NoNewline) { Write-Host $Text -ForegroundColor $Color -NoNewline } else { Write-Host $Text -ForegroundColor $Color }
+        } catch { Write-Host $Text }
+    }
+}
+
+function Write-NeonV16 {
+    param([string]$Text = "", [string]$Color = "Gray", [switch]$NoNewline)
+    if ($script:AllowVerboseScanOutput) {
+        try {
+            if ($script:UiNoColor) { $Color = "Gray" }
+            if ($NoNewline) { Write-Host $Text -ForegroundColor $Color -NoNewline } else { Write-Host $Text -ForegroundColor $Color }
+        } catch { Write-Host $Text }
+    }
+}
+
+function Write-NebulaV19 {
+    param([string]$Text = "", [string]$Color = "Gray", [switch]$NoNewline)
+    try {
+        if ($script:UiNoColor) { $Color = "Gray" }
+        if ($NoNewline) { Write-Host $Text -ForegroundColor $Color -NoNewline } else { Write-Host $Text -ForegroundColor $Color }
+    } catch { Write-Host $Text }
+}
+
+function New-NebulaLineV19 {
+    param([string]$Left, [string]$Right = "", [int]$Width = 130)
+    $w = [Math]::Max(98, [Math]::Min(156, $Width))
+    $inner = $w - 4
+    $l = ([string]$Left) -replace "`r|`n|`t", " "
+    $r = ([string]$Right) -replace "`r|`n|`t", " "
+    if ($r.Length -gt 0) {
+        $space = $inner - $l.Length - $r.Length
+        if ($space -lt 1) {
+            $maxLeft = [Math]::Max(12, $inner - $r.Length - 5)
+            if ($l.Length -gt $maxLeft) { $l = $l.Substring(0, $maxLeft) + "..." }
+            $space = [Math]::Max(1, $inner - $l.Length - $r.Length)
+        }
+        return "| " + $l + (" " * $space) + $r + " |"
+    }
+    if ($l.Length -gt $inner) { $l = $l.Substring(0, $inner-3) + "..." }
+    return "| " + $l.PadRight($inner) + " |"
+}
+
+function Write-NebulaBoxV19 {
+    param([string]$Title, [string[]]$Lines, [string]$Color = "Cyan")
+    $w = [Math]::Max(98, [Math]::Min(156, $script:UiWidth))
+    $top = "/" + ("*" * ($w-2)) + "\\"
+    $mid = "+" + ("-" * ($w-2)) + "+"
+    $bottom = "\\" + ("*" * ($w-2)) + "/"
+    Write-NebulaV19 $top $Color
+    $t = "  " + $Title + "  "
+    if ($t.Length -gt ($w-4)) { $t = $t.Substring(0,$w-7) + "..." }
+    $left = [Math]::Max(0, [int](($w-2-$t.Length)/2))
+    $right = [Math]::Max(0, $w-2-$left-$t.Length)
+    Write-NebulaV19 ("|" + (" "*$left) + $t + (" "*$right) + "|") $Color
+    Write-NebulaV19 $mid "DarkGray"
+    foreach ($line in @($Lines)) { Write-NebulaV19 (New-NebulaLineV19 $line "" $w) "Gray" }
+    Write-NebulaV19 $bottom $Color
+}
+
+function Write-NebulaRuleV19 {
+    param([string]$Title = "", [string]$Color = "DarkCyan")
+    $w = [Math]::Max(98, [Math]::Min(156, $script:UiWidth))
+    if ([string]::IsNullOrWhiteSpace($Title)) { Write-NebulaV19 (("-" * $w)) $Color; return }
+    $label = "[ " + $Title + " ]"
+    if ($label.Length -gt ($w - 6)) { $label = $label.Substring(0, $w - 9) + "..." }
+    $left = [Math]::Max(2, [int](($w - $label.Length) / 2))
+    $right = [Math]::Max(2, $w - $left - $label.Length)
+    Write-NebulaV19 (("=" * $left) + $label + ("=" * $right)) $Color
+}
+
+function Write-NebulaBootV19 {
+    if ($script:UiCompact -or $script:UiNoColor) { return }
+    $frames = @(".       ", "..      ", "...     ", "....    ", "*....   ", "**...   ", "***..   ", "****.   ", "*****   ", " ****   ", "  ***   ", "   **   ", "    *   ")
+    foreach ($f in $frames) {
+        Write-NebulaV19 ("`r  NEBULA FIELD " + $f + " calibrating visual engine") "DarkCyan" -NoNewline
+        try { Start-Sleep -Milliseconds 28 } catch {}
+    }
+    Write-NebulaV19 "`r  NEBULA FIELD ***** visual engine online                " "Green"
+}
+
+function Start-UiPhase {
+    param([string]$Name, [string]$Details = "")
+    $script:UiPhaseIndex++
+    $script:UiLastStatus = $Name
+    if ($script:UiCompact) { return }
+    $total = [Math]::Max(1, [int]$script:UiPhaseTotal)
+    $idx = [Math]::Min($total, [int]$script:UiPhaseIndex)
+    $pct = [int](($idx / $total) * 24)
+    $bar = ("#" * $pct).PadRight(24, ".")
+    $time = Get-TimeBoxV16
+    Write-NebulaV19 ("  [" + $bar + "] WARP " + $idx + "/" + $total + "   T-" + $time) "DarkCyan"
+}
+
+function Show-Banner {
+    Clear-Host
+    $mode = if ($FullSystem) { "FULLSYSTEM" } elseif ($Deep) { "DEEP" } elseif ($Fast) { "FAST" } else { "SMART" }
+    $adminState = Get-CosmicAdminTextV17
+    $privacy = if ($NoScreenPrivacyGuard) { "OFF" } else { "ON / " + $ScreenGuardMode }
+    Write-NebulaBootV19
+    Write-NebulaV19 "" "DarkGray"
+    Write-NebulaV19 "        .        *        .          Y R Y S   N E B U L A          .        *        ." "DarkCyan"
+    Write-NebulaV19 "" "DarkGray"
+    Write-NebulaV19 "  ██╗   ██╗██████╗ ██╗   ██╗███████╗      ███╗   ██╗███████╗██████╗ ██╗   ██╗██╗      █████╗" "Cyan"
+    Write-NebulaV19 "  ╚██╗ ██╔╝██╔══██╗╚██╗ ██╔╝██╔════╝      ████╗  ██║██╔════╝██╔══██╗██║   ██║██║     ██╔══██╗" "DarkCyan"
+    Write-NebulaV19 "   ╚████╔╝ ██████╔╝ ╚████╔╝ ███████╗      ██╔██╗ ██║█████╗  ██████╔╝██║   ██║██║     ███████║" "Green"
+    Write-NebulaV19 "    ╚██╔╝  ██╔══██╗  ╚██╔╝  ╚════██║      ██║╚██╗██║██╔══╝  ██╔══██╗██║   ██║██║     ██╔══██║" "DarkGreen"
+    Write-NebulaV19 "     ██║   ██║  ██║   ██║   ███████║      ██║ ╚████║███████╗██████╔╝╚██████╔╝███████╗██║  ██║" "Green"
+    Write-NebulaV19 "     ╚═╝   ╚═╝  ╚═╝   ╚═╝   ╚══════╝      ╚═╝  ╚═══╝╚══════╝╚═════╝  ╚═════╝ ╚══════╝╚═╝  ╚═╝" "DarkCyan"
+    Write-NebulaV19 "" "DarkGray"
+    Write-NebulaBoxV19 "v19.0 :: NEBULA VISUAL FORENSIC AI" @(
+        "MODE " + $mode + "    TIME " + $MaxMinutes + "m    CANDIDATES " + $MaxCandidates + "    WIDTH " + $script:UiWidth,
+        "ADMIN " + $adminState + "    SCREEN GUARD " + $privacy,
+        "STYLE cinematic nebula HUD    OUTPUT visual pulse + final evidence only",
+        "PRIVACY no permanent report, temp workspace removed on exit"
+    ) "Cyan"
+    if (-not $script:IsElevated) {
+        Write-NebulaBoxV19 "ADMIN CHECK" @(
+            "Admin token was not confirmed. Scan continues with fallback providers.",
+            "Protected process, driver, prefetch and registry coverage can be partial."
+        ) "Yellow"
+    }
+}
+
+function Get-ProcessSnapshotForScreenV17 {
+    $items = New-Object System.Collections.Generic.List[object]
+    try {
+        foreach ($p in Get-CimInstance Win32_Process -ErrorAction Stop) {
+            [void]$items.Add([pscustomobject]@{ Name=[string]$p.Name; ProcessId=[int]$p.ProcessId; Path=[string]$p.ExecutablePath; CommandLine=[string]$p.CommandLine })
+        }
+        return [object[]]$items.ToArray()
+    } catch {}
+    try {
+        foreach ($p in Get-Process -ErrorAction SilentlyContinue) {
+            [void]$items.Add([pscustomobject]@{ Name=[string]$p.ProcessName; ProcessId=[int]$p.Id; Path=""; CommandLine="" })
+        }
+    } catch {}
+    return [object[]]$items.ToArray()
+}
+
+function Print-FindingBlock {
+    param([object]$F, [int]$Index)
+    $color = Get-UiColorForSeverity $F.Severity
+    if ($F.ObjectType -eq "SCREEN_PRIVACY") { $color = "Yellow" }
+    $w = [Math]::Max(98, [Math]::Min(156, $script:UiWidth))
+    $top = "/" + ("=" * ($w-2)) + "\\"
+    $mid = "+" + ("-" * ($w-2)) + "+"
+    $bottom = "\\" + ("=" * ($w-2)) + "/"
+    $title = "#" + $Index + "  " + $F.Severity + "  RISK " + $F.Score + "  CONF " + $F.Confidence
+    if ($script:UiCompact) {
+        Write-NebulaV19 (("[" + $Index + "] " + $F.Severity + " risk=" + $F.Score + " class=" + $F.Class + " :: " + (Truncate-UiText $F.Object 95))) $color
+        return
+    }
+    Write-NebulaV19 $top $color
+    Write-NebulaV19 (New-NebulaLineV19 $title ("TYPE " + $F.ObjectType) $w) $color
+    Write-NebulaV19 $mid "DarkGray"
+    Write-NebulaV19 (New-NebulaLineV19 ("CLASS " + $F.Class) ("TRACE " + [bool]$F.DeletedTrace) $w) "Gray"
+    Write-NebulaV19 (New-NebulaLineV19 ("OBJECT " + $F.Object) "" $w) "White"
+    if ($F.Sha256) { Write-NebulaV19 (New-NebulaLineV19 ("SHA256 " + $F.Sha256) "" $w) "DarkGray" }
+    try {
+        $profile = $F.EvidenceProfile
+        if ($profile.Positive.Count -gt 0) {
+            Write-NebulaV19 (New-NebulaLineV19 "SIGNAL MATRIX" "" $w) "Cyan"
+            foreach ($e in ($profile.Positive | Select-Object -First 7)) { Write-NebulaV19 (New-NebulaLineV19 (" + " + $e) "" $w) "Gray" }
+        }
+        if ($profile.Context.Count -gt 0) {
+            Write-NebulaV19 (New-NebulaLineV19 "CONTEXT FIELD" "" $w) "DarkCyan"
+            foreach ($e in ($profile.Context | Select-Object -First 4)) { Write-NebulaV19 (New-NebulaLineV19 (" ~ " + $e) "" $w) "DarkGray" }
+        }
+        if ($profile.Mitigation.Count -gt 0) {
+            Write-NebulaV19 (New-NebulaLineV19 "FALSE-POSITIVE SHIELD" "" $w) "Green"
+            foreach ($e in ($profile.Mitigation | Select-Object -First 4)) { Write-NebulaV19 (New-NebulaLineV19 (" - " + $e) "" $w) "DarkGray" }
+        }
+    } catch {
+        foreach ($e in (@($F.Evidence) | Select-Object -First 7)) { Write-NebulaV19 (New-NebulaLineV19 (" + " + $e) "" $w) "Gray" }
+    }
+    if ($F.Recommendation) { Write-NebulaV19 (New-NebulaLineV19 ("NEXT " + $F.Recommendation) "" $w) "White" }
+    Write-NebulaV19 $bottom $color
+}
+
+function Write-NebulaBarLineV19 {
+    param([string]$Label, [int]$Value, [int]$Max, [string]$Color)
+    $width = 42
+    $fill = 0
+    if ($Max -gt 0) { $fill = [int](($Value / $Max) * $width) }
+    $fill = [Math]::Max(0, [Math]::Min($width, $fill))
+    $bar = ("#" * $fill).PadRight($width, ".")
+    Write-NebulaV19 (("  " + $Label.PadRight(10) + " [" + $bar + "] " + $Value)) $Color
+}
+
+function Show-FinalVerdict {
+    $elapsed = [int]((Get-Date) - $script:StartTime).TotalSeconds
+    $sorted = @($script:Findings | Sort-Object Score -Descending)
+    $critical = @($sorted | Where-Object { $_.Severity -eq "CRITICAL" }).Count
+    $high = @($sorted | Where-Object { $_.Severity -eq "HIGH" }).Count
+    $medium = @($sorted | Where-Object { $_.Severity -eq "MEDIUM" }).Count
+    $low = @($sorted | Where-Object { $_.Severity -eq "LOW" }).Count
+    $privacyCount = $script:ScreenSignals.Count
+    $verdict = "CLEAN"
+    $vcolor = "Green"
+    if ($critical -gt 0) { $verdict = "CHEAT LIKELY"; $vcolor = "Red" } elseif ($high -gt 0) { $verdict = "SUSPICIOUS"; $vcolor = "Yellow" } elseif ($medium -gt 0) { $verdict = "WEAK SIGNALS"; $vcolor = "Cyan" }
+    Write-NebulaV19 "" "DarkGray"
+    Write-NebulaRuleV19 "NEBULA FINAL" $vcolor
+    Write-NebulaBoxV19 "VERDICT" @(
+        "RESULT " + $verdict + "    RUNTIME " + $elapsed + " sec    TARGET <= 300 sec",
+        "CRITICAL " + $critical + "    HIGH " + $high + "    MEDIUM " + $medium + "    LOW " + $low,
+        "CANDIDATES " + $script:CandidatesSeen + "    ANALYZED " + $script:FilesAnalyzed + "    TRUSTED IGNORED " + $script:TrustedIgnoredCount,
+        "SCREEN SIGNALS " + $privacyCount + "    ADMIN " + (Get-CosmicAdminTextV17),
+        "No permanent report was created. Temporary workspace is removed on exit."
+    ) $vcolor
+    Write-NebulaRuleV19 "RISK CONSTELLATION" "White"
+    $riskMax = [Math]::Max(1, (@($critical,$high,$medium,$low) | Measure-Object -Maximum).Maximum)
+    Write-NebulaBarLineV19 "CRITICAL" $critical $riskMax "Red"
+    Write-NebulaBarLineV19 "HIGH" $high $riskMax "Yellow"
+    Write-NebulaBarLineV19 "MEDIUM" $medium $riskMax "Cyan"
+    Write-NebulaBarLineV19 "LOW" $low $riskMax "DarkGray"
+    Write-NebulaRuleV19 "FORENSIC COUNTERS" "White"
+    Write-NebulaV19 ("  DNS=" + $script:DNSCacheCount + " BITS=" + $script:BitsJobCount + " Firewall=" + $script:FirewallRuleCount + " Pipes=" + $script:NamedPipeCount + " JavaAttach=" + $script:JavaAttachCount + " USN=" + $script:USNTraceCount) "DarkGray"
+    Write-NebulaV19 ("  HWID=" + $script:HWIDAnomalyCount + " USB=" + $script:USBTraceCount + " WMI=" + $script:WMIPersistenceCount + " Browser=" + $script:BrowserTraceCount + " Discord=" + $script:DiscordTraceCount + " Macros=" + $script:MacroProfileCount + " KDMapper=" + $script:KDMapperTraceCount) "DarkGray"
+    $topItems = @($sorted | Select-Object -First ([Math]::Min($Top, 28)))
+    if ($topItems.Count -gt 0) {
+        Write-NebulaRuleV19 "TOP EVIDENCE" "Magenta"
+        $i = 1
+        foreach ($f in $topItems) { Print-FindingBlock -F $f -Index $i; $i++ }
+    } else {
+        Write-NebulaBoxV19 "TOP EVIDENCE" @("No strong cheat indicators were found by the local evidence engine.") "Green"
+    }
+    if ($ShowIgnored -and $script:Ignored.Count -gt 0) {
+        Write-NebulaRuleV19 "IGNORED TRUSTED / WEAK" "DarkGray"
+        $j = 1
+        foreach ($x in ($script:Ignored | Sort-Object Score -Descending | Select-Object -First 18)) { Print-FindingBlock -F $x -Index $j; $j++ }
+    }
+}
+
 function Main {
     if ($SelfTest) { Test-SelfSyntax }
-    $script:Version = "18.0.0"
+    $script:Version = "19.0.0"
     $script:StartTime = Get-Date
+    $script:AllowVerboseScanOutput = $false
     $script:UiNoProgress = $true
     $script:UiWidth = [Math]::Max(100, [Math]::Min(150, $UiWidth))
     $targetMinutes = [Math]::Min(5, [Math]::Max(3, [int]$MaxMinutes))
