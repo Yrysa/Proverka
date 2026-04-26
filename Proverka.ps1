@@ -66,11 +66,11 @@ param(
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = "Continue"
-$script:Version = "20.0.0"
+$script:Version = "21.0.0"
 $script:StartTime = Get-Date
 $script:Deadline = $script:StartTime.AddMinutes([Math]::Max(2,$MaxMinutes))
 $script:TempRoot = Join-Path $env:TEMP ("YRYS_CHECKER_" + ([Guid]::NewGuid().ToString("N")))
-$script:UiWidth = [Math]::Max(78, [Math]::Min(130, $UiWidth))
+$script:UiWidth = [Math]::Max(96, [Math]::Min(160, $UiWidth))
 $script:UiNoColor = [bool]$NoColor
 $script:UiCompact = [bool]$CompactUI
 $script:UiNoProgress = [bool]$NoProgress
@@ -7139,14 +7139,86 @@ function Main {
 }
 
 
-function Write-AuroraBootV20 {
-    if ($script:UiCompact -or $script:UiNoColor) { return }
-    $frames = @(".       ", "..      ", "...     ", "....    ", "*....   ", "**...   ", "***..   ", "****.   ", "*****   ", " ****   ", "  ***   ", "   **   ", "    *   ")
-    foreach ($f in $frames) {
-        Write-AuroraV19 ("`r  AURORA FIELD " + $f + " visual engine online") "DarkGreen" -NoNewline
-        try { Start-Sleep -Milliseconds 22 } catch {}
+
+function Write-PhantomLine {
+    param([string]$Text = "", [string]$Color = "Gray", [switch]$NoNewline)
+    try {
+        if ($script:UiNoColor) { $Color = "Gray" }
+        if ($NoNewline) { Write-Host $Text -ForegroundColor $Color -NoNewline } else { Write-Host $Text -ForegroundColor $Color }
+    } catch {
+        if ($NoNewline) { Write-Host $Text -NoNewline } else { Write-Host $Text }
     }
-    Write-AuroraV19 "`r  AURORA FIELD ***** visual engine online                " "Green"
+}
+
+function Get-PhantomWidth {
+    try { return [Math]::Max(96, [Math]::Min(160, [int]$script:UiWidth)) } catch { return 120 }
+}
+
+function New-PhantomText {
+    param([string]$Text, [int]$Max)
+    if ($null -eq $Text) { return "" }
+    $s = ([string]$Text) -replace "`r|`n|`t", " "
+    if ($s.Length -le $Max) { return $s }
+    if ($Max -le 4) { return $s.Substring(0,$Max) }
+    return $s.Substring(0,$Max-3) + "..."
+}
+
+function Write-PhantomRule {
+    param([string]$Title = "", [string]$Color = "DarkGreen")
+    $w = Get-PhantomWidth
+    if ([string]::IsNullOrWhiteSpace($Title)) {
+        Write-PhantomLine ("=" * $w) $Color
+        return
+    }
+    $label = "[ " + $Title + " ]"
+    if ($label.Length -gt ($w - 8)) { $label = New-PhantomText $label ($w - 8) }
+    $left = [Math]::Max(2, [int](($w - $label.Length) / 2))
+    $right = [Math]::Max(2, $w - $left - $label.Length)
+    Write-PhantomLine (("=" * $left) + $label + ("=" * $right)) $Color
+}
+
+function New-PhantomBoxLine {
+    param([string]$Left, [string]$Right = "")
+    $w = Get-PhantomWidth
+    $inner = $w - 4
+    $l = New-PhantomText $Left $inner
+    $r = New-PhantomText $Right $inner
+    if ($r.Length -gt 0) {
+        $space = $inner - $l.Length - $r.Length
+        if ($space -lt 1) {
+            $l = New-PhantomText $l ([Math]::Max(8, $inner - $r.Length - 4))
+            $space = [Math]::Max(1, $inner - $l.Length - $r.Length)
+        }
+        return "| " + $l + (" " * $space) + $r + " |"
+    }
+    if ($l.Length -gt $inner) { $l = New-PhantomText $l $inner }
+    return "| " + $l.PadRight($inner) + " |"
+}
+
+function Write-PhantomBox {
+    param([string]$Title, [string[]]$Lines, [string]$Color = "Green")
+    $w = Get-PhantomWidth
+    Write-PhantomLine ("+" + ("=" * ($w-2)) + "+") $Color
+    if (-not [string]::IsNullOrWhiteSpace($Title)) {
+        $t = "  " + $Title + "  "
+        if ($t.Length -gt ($w-4)) { $t = New-PhantomText $t ($w-4) }
+        $left = [Math]::Max(0, [int](($w-2-$t.Length)/2))
+        $right = [Math]::Max(0, $w-2-$left-$t.Length)
+        Write-PhantomLine ("|" + (" "*$left) + $t + (" "*$right) + "|") $Color
+        Write-PhantomLine ("+" + ("-" * ($w-2)) + "+") "DarkGray"
+    }
+    foreach ($line in @($Lines)) { Write-PhantomLine (New-PhantomBoxLine $line "") "Gray" }
+    Write-PhantomLine ("+" + ("=" * ($w-2)) + "+") $Color
+}
+
+function Write-PhantomBoot {
+    if ($script:UiCompact -or $script:UiNoColor) { return }
+    $frames = @("[.                         ]","[..                        ]","[....                      ]","[......                    ]","[.........                 ]","[............              ]","[................          ]","[....................      ]","[......................... ]","[..........................]")
+    foreach ($f in $frames) {
+        Write-PhantomLine ("`r  VISUAL ENGINE " + $f + " online") "Green" -NoNewline
+        try { Start-Sleep -Milliseconds 28 } catch {}
+    }
+    Write-PhantomLine "`r  VISUAL ENGINE [..........................] ready        " "Green"
 }
 
 function Start-UiPhase {
@@ -7156,38 +7228,41 @@ function Start-UiPhase {
     if ($script:UiCompact) { return }
     $total = [Math]::Max(1, [int]$script:UiPhaseTotal)
     $idx = [Math]::Min($total, [int]$script:UiPhaseIndex)
-    $pct = [int](($idx / $total) * 36)
-    $bar = ("#" * $pct).PadRight(36, ".")
-    $time = Get-TimeBoxV16
-    $pulse = @(".", "..", "...", "*..", "**.", "***")[$idx % 6]
-    Write-AuroraV19 ("  AURORA WARP [" + $bar + "] " + $idx + "/" + $total + "  T-" + $time + "  " + $pulse) "Green"
+    $fill = [int](($idx / [double]$total) * 34)
+    $fill = [Math]::Max(1, [Math]::Min(34, $fill))
+    $bar = ("=" * $fill).PadRight(34, ".")
+    $pulse = @(".", "..", "...", "::", "**", "++")[$idx % 6]
+    $msg = "`r  SCAN " + $pulse.PadRight(3) + " [" + $bar + "] " + $idx.ToString().PadLeft(2) + "/" + $total + "   T-" + (Get-TimeBoxV16) + "        "
+    Write-PhantomLine $msg "Green" -NoNewline
+    if ($idx -eq $total) { Write-PhantomLine "" "Green" }
 }
 
 function Show-Banner {
     Clear-Host
     $mode = if ($FullSystem) { "FULLSYSTEM" } elseif ($Deep) { "DEEP" } elseif ($Fast) { "FAST" } else { "SMART" }
     $adminState = Get-CosmicAdminTextV17
-    $privacy = if ($NoScreenPrivacyGuard) { "OFF" } else { "ON / " + $ScreenGuardMode }
-    Write-AuroraBootV20
-    Write-AuroraV19 "" "DarkGray"
-    Write-AuroraV19 "                         .     *     .       Y R Y S   A U R O R A       .     *     ." "DarkCyan"
-    Write-AuroraV19 "" "DarkGray"
-    Write-AuroraV19 "        __   __  ____   __   __  ____        _    _   _  ____   ___   ____      _" "Green"
-    Write-AuroraV19 "        \\ \\ / / |  _ \\  \\ \\ / / / ___|      / \\  | | | |/ ___| / _ \\ |  _ \\    / \\" "Green"
-    Write-AuroraV19 "         \\ V /  | |_) |  \\ V /  \\___ \\     / _ \\ | | | | |    | | | || |_) |  / _ \\" "Cyan"
-    Write-AuroraV19 "          | |   |  _ <    | |    ___) |   / ___ \\| |_| | |___ | |_| ||  _ <  / ___ \\" "Cyan"
-    Write-AuroraV19 "          |_|   |_| \\_\\   |_|   |____/   /_/   \\_\\\\___/ \\____| \\___/ |_| \\_\\/_/   \\_\\" "DarkCyan"
-    Write-AuroraV19 "" "DarkGray"
-    Write-AuroraBoxV19 "AUTONOMOUS FORENSIC AI v20" @(
+    $privacy = if ($NoScreenPrivacyGuard) { "OFF" } else { $ScreenGuardMode }
+    Write-PhantomBoot
+    Write-PhantomLine "" "DarkGray"
+    Write-PhantomLine "                         Y R Y S   C H E C K E R" "Green"
+    Write-PhantomLine "                  P H A N T O M   F O R E N S I C   U I" "DarkGreen"
+    Write-PhantomLine "" "DarkGray"
+    Write-PhantomLine "              YYYYY  RRRRR   YYYYY   SSSSS       CHECKER" "Green"
+    Write-PhantomLine "                Y    R   R     Y    S            FAST AI" "DarkGreen"
+    Write-PhantomLine "                Y    RRRRR     Y     SSS         FORENSIC" "Green"
+    Write-PhantomLine "                Y    R  R      Y        S        HUNTER" "DarkGreen"
+    Write-PhantomLine "                Y    R   R     Y    SSSSS        CLEAN UI" "Green"
+    Write-PhantomLine "" "DarkGray"
+    Write-PhantomBox "SESSION" @(
         "MODE " + $mode + "    TIME " + $MaxMinutes + "m    CANDIDATES " + $MaxCandidates + "    WIDTH " + $script:UiWidth,
         "ADMIN " + $adminState + "    SCREEN GUARD " + $privacy,
-        "STYLE green aurora HUD    OUTPUT visual pulse + final evidence",
-        "PRIVACY no permanent report, temp workspace removed on exit"
+        "OUTPUT clean visual scan, final evidence cards, no permanent report",
+        "TEMP workspace is removed automatically on exit"
     ) "Green"
     if (-not $script:IsElevated) {
-        Write-AuroraBoxV19 "ADMIN CHECK" @(
-            "Admin token was not confirmed. Scan continues with fallback providers.",
-            "Protected process, driver, prefetch and registry coverage can be partial."
+        Write-PhantomBox "ADMIN" @(
+            "Admin token was not confirmed by Windows.",
+            "The scan continues, but protected drivers, prefetch and registry zones may be partial."
         ) "Yellow"
     }
 }
@@ -7196,30 +7271,32 @@ function Get-ProcessSnapshotForScreenV17 {
     $items = New-Object System.Collections.Generic.List[object]
     try {
         foreach ($p in Get-CimInstance Win32_Process -ErrorAction Stop) {
-            [void]$items.Add([pscustomobject]@{ Name=[string]$p.Name; ProcessId=[int]$p.ProcessId; Path=[string]$p.ExecutablePath; CommandLine=[string]$p.CommandLine })
+            $n = [string]$p.Name
+            if (-not [string]::IsNullOrWhiteSpace($n)) { [void]$items.Add([pscustomobject]@{ Name=$n; ProcessId=[int]$p.ProcessId; Path=[string]$p.ExecutablePath; CommandLine=[string]$p.CommandLine }) }
         }
-        return ,$items.ToArray()
-    } catch {}
-    try {
-        foreach ($p in Get-Process -ErrorAction SilentlyContinue) {
-            [void]$items.Add([pscustomobject]@{ Name=[string]$p.ProcessName; ProcessId=[int]$p.Id; Path=""; CommandLine="" })
-        }
-    } catch {}
-    return ,$items.ToArray()
+    } catch {
+        try {
+            foreach ($p in Get-Process -ErrorAction SilentlyContinue) {
+                $n = [string]$p.ProcessName
+                if (-not [string]::IsNullOrWhiteSpace($n)) { [void]$items.Add([pscustomobject]@{ Name=$n; ProcessId=[int]$p.Id; Path=""; CommandLine="" }) }
+            }
+        } catch {}
+    }
+    return [object[]]($items.ToArray())
 }
 
 function Analyze-ScreenPrivacyGuardV17 {
     if ($NoScreenPrivacyGuard) { return }
-    $script:ScreenSignals.Clear()
+    try { $script:ScreenSignals.Clear() } catch { $script:ScreenSignals = New-Object System.Collections.Generic.List[object] }
     $rules = Get-ScreenProcessRulesV17
-    $processes = @(Get-ProcessSnapshotForScreenV17)
+    $processes = [object[]](Get-ProcessSnapshotForScreenV17)
     foreach ($p in $processes) {
         $name = ([string]$p.Name).ToLowerInvariant()
         $cmd = ([string]$p.CommandLine).ToLowerInvariant()
         foreach ($r in $rules) {
             $rn = ([string]$r.Name).ToLowerInvariant()
             if ($name -eq $rn -or $name -eq ($rn + ".exe") -or $name.Contains($rn) -or $cmd.Contains($rn)) {
-                $obj = [pscustomobject]@{ Label=$r.Label; Process=$p.Name; Pid=$p.ProcessId; Type=$r.Type; Score=$r.Score; Path=$p.Path; Color=$r.Color }
+                $obj = [pscustomobject]@{ Label=[string]$r.Label; Process=[string]$p.Name; Pid=[int]$p.ProcessId; Type=[string]$r.Type; Score=[int]$r.Score; Path=[string]$p.Path; Color=[string]$r.Color }
                 [void]$script:ScreenSignals.Add($obj)
                 break
             }
@@ -7229,31 +7306,216 @@ function Analyze-ScreenPrivacyGuardV17 {
     $top = @($script:ScreenSignals | Sort-Object Score -Descending | Select-Object -First 8)
     foreach ($x in $top) {
         if ([int]$x.Score -ge 75) {
-            Add-Finding -Object ($x.Label + " PID " + $x.Pid) -ObjectType "SCREEN_PRIVACY" -Score ([int]$x.Score) -Severity (Convert-ScoreToSeverity ([int]$x.Score)) -Class "screen_capture_context" -Evidence @("screen capture capable process is running", "process type: " + $x.Type, "privacy context only; not a cheat proof")
+            Add-Finding -Object ($x.Label + " PID " + $x.Pid) -ObjectType "SCREEN_PRIVACY" -Score ([int]$x.Score) -Severity (Convert-ScoreToSeverity ([int]$x.Score)) -Class "screen_capture_context" -Evidence @("capture or remote-control process is active", "process: " + $x.Process + " PID " + $x.Pid, "type: " + $x.Type, "privacy context only; not cheat proof")
         }
     }
     if ($ScreenGuardMode -eq "Warn") { return }
+    $names = New-Object System.Collections.Generic.List[string]
+    foreach ($x in $top) { [void]$names.Add(($x.Label + "  process=" + $x.Process + "  pid=" + $x.Pid)) }
+    $lines = New-Object System.Collections.Generic.List[string]
+    [void]$lines.Add("Capture, streaming or remote-control software is active.")
+    [void]$lines.Add("Detected: " + $script:ScreenSignals.Count)
+    foreach ($n in $names) { [void]$lines.Add("- " + $n) }
+    if ($ScreenGuardMode -eq "Pause") { [void]$lines.Add("The scan will pause after the countdown.") }
+    else { [void]$lines.Add("The scan will stop cleanly after the countdown.") }
+    Write-PhantomLine "" "DarkGray"
+    Write-PhantomBox "SCREEN GUARD" ([string[]]$lines.ToArray()) "Yellow"
     $seconds = [Math]::Max(3, [Math]::Min(10, [int]$ScreenGuardCountdownSeconds))
-    Write-AuroraBoxV19 "SCREEN PRIVACY" @(
-        "Capture, stream or remote-control software was detected.",
-        "Detected items: " + $script:ScreenSignals.Count,
-        "The scanner will not close other apps. Stop sharing or recording manually."
-    ) "Yellow"
     for ($i=$seconds; $i -ge 1; $i--) {
-        Write-AuroraV19 ("  PRIVACY COUNTDOWN " + $i + "s") "Yellow"
+        Write-PhantomLine ("  SCREEN GUARD LOCK " + $i + "s") "Yellow"
         try { Start-Sleep -Seconds 1 } catch {}
     }
     if ($ScreenGuardMode -eq "Pause") {
-        try { Start-Sleep -Seconds ([Math]::Max(3, [Math]::Min(90, $ScreenGuardPauseSeconds))) } catch {}
+        try { Start-Sleep -Seconds ([Math]::Max(3, [Math]::Min(90, [int]$ScreenGuardPauseSeconds))) } catch {}
         return
     }
     if ($ScreenGuardMode -eq "Exit" -or $ScreenGuardMode -eq "Block") {
-        throw "ScreenPrivacyGuardExit"
+        $script:ScreenGuardBlocked = $true
+        Write-PhantomBox "SCAN STOPPED" @(
+            "Screen Guard stopped the check cleanly.",
+            "Stop screen sharing or recording, then run the scanner again.",
+            "No permanent report was created. Temporary workspace will be removed."
+        ) "Yellow"
+        return
     }
+}
+
+function Print-FindingBlock {
+    param([object]$F, [int]$Index)
+    $color = Get-UiColorForSeverity $F.Severity
+    if ($F.ObjectType -eq "SCREEN_PRIVACY") { $color = "Yellow" }
+    $w = Get-PhantomWidth
+    $top = "+" + ("=" * ($w-2)) + "+"
+    $mid = "+" + ("-" * ($w-2)) + "+"
+    $bottom = "+" + ("=" * ($w-2)) + "+"
+    $title = "#" + $Index + "  " + $F.Severity + "  RISK " + $F.Score + "  CONF " + $F.Confidence
+    if ($script:UiCompact) {
+        Write-PhantomLine (("[" + $Index + "] " + $F.Severity + " risk=" + $F.Score + " class=" + $F.Class + " :: " + (New-PhantomText $F.Object 95))) $color
+        return
+    }
+    Write-PhantomLine $top $color
+    Write-PhantomLine (New-PhantomBoxLine $title ("TYPE " + $F.ObjectType)) $color
+    Write-PhantomLine $mid "DarkGray"
+    Write-PhantomLine (New-PhantomBoxLine ("CLASS " + $F.Class) ("TRACE " + [bool]$F.DeletedTrace)) "Gray"
+    Write-PhantomLine (New-PhantomBoxLine ("OBJECT " + $F.Object) "") "White"
+    if ($F.Sha256) { Write-PhantomLine (New-PhantomBoxLine ("SHA256 " + $F.Sha256) "") "DarkGray" }
+    try {
+        $profile = $F.EvidenceProfile
+        if ($profile.Positive.Count -gt 0) {
+            Write-PhantomLine (New-PhantomBoxLine "SIGNALS" "") "Green"
+            foreach ($e in ($profile.Positive | Select-Object -First 7)) { Write-PhantomLine (New-PhantomBoxLine (" + " + $e) "") "Gray" }
+        }
+        if ($profile.Context.Count -gt 0) {
+            Write-PhantomLine (New-PhantomBoxLine "CONTEXT" "") "DarkCyan"
+            foreach ($e in ($profile.Context | Select-Object -First 4)) { Write-PhantomLine (New-PhantomBoxLine (" ~ " + $e) "") "DarkGray" }
+        }
+        if ($profile.Mitigation.Count -gt 0) {
+            Write-PhantomLine (New-PhantomBoxLine "FALSE POSITIVE SHIELD" "") "Green"
+            foreach ($e in ($profile.Mitigation | Select-Object -First 4)) { Write-PhantomLine (New-PhantomBoxLine (" - " + $e) "") "DarkGray" }
+        }
+    } catch {
+        foreach ($e in (@($F.Evidence) | Select-Object -First 7)) { Write-PhantomLine (New-PhantomBoxLine (" + " + $e) "") "Gray" }
+    }
+    if ($F.Recommendation) { Write-PhantomLine (New-PhantomBoxLine ("NEXT " + $F.Recommendation) "") "White" }
+    Write-PhantomLine $bottom $color
+}
+
+function Write-PhantomBarLine {
+    param([string]$Label, [int]$Value, [int]$Max, [string]$Color)
+    $width = 40
+    $fill = 0
+    if ($Max -gt 0) { $fill = [int](($Value / [double]$Max) * $width) }
+    $fill = [Math]::Max(0, [Math]::Min($width, $fill))
+    $bar = ("=" * $fill).PadRight($width, ".")
+    Write-PhantomLine ("  " + $Label.PadRight(10) + " [" + $bar + "] " + $Value) $Color
+}
+
+function Show-FinalVerdict {
+    $elapsed = [int]((Get-Date) - $script:StartTime).TotalSeconds
+    $sorted = @($script:Findings | Sort-Object Score -Descending)
+    $critical = @($sorted | Where-Object { $_.Severity -eq "CRITICAL" }).Count
+    $high = @($sorted | Where-Object { $_.Severity -eq "HIGH" }).Count
+    $medium = @($sorted | Where-Object { $_.Severity -eq "MEDIUM" }).Count
+    $low = @($sorted | Where-Object { $_.Severity -eq "LOW" }).Count
+    $privacyCount = try { [int]$script:ScreenSignals.Count } catch { 0 }
+    $verdict = "CLEAN"
+    $vcolor = "Green"
+    if ($critical -gt 0) { $verdict = "CHEAT LIKELY"; $vcolor = "Red" } elseif ($high -gt 0) { $verdict = "SUSPICIOUS"; $vcolor = "Yellow" } elseif ($medium -gt 0) { $verdict = "WEAK SIGNALS"; $vcolor = "Cyan" }
+    Write-PhantomLine "" "DarkGray"
+    Write-PhantomRule "FINAL RESULT" $vcolor
+    Write-PhantomBox "VERDICT" @(
+        "RESULT " + $verdict + "    RUNTIME " + $elapsed + " sec    TARGET <= 300 sec",
+        "CRITICAL " + $critical + "    HIGH " + $high + "    MEDIUM " + $medium + "    LOW " + $low,
+        "CANDIDATES " + $script:CandidatesSeen + "    ANALYZED " + $script:FilesAnalyzed + "    TRUSTED IGNORED " + $script:TrustedIgnoredCount,
+        "SCREEN SIGNALS " + $privacyCount + "    ADMIN " + (Get-CosmicAdminTextV17),
+        "No permanent report was created. Temporary workspace is removed on exit."
+    ) $vcolor
+    Write-PhantomRule "RISK MAP" "Green"
+    $riskMax = [Math]::Max(1, (@($critical,$high,$medium,$low) | Measure-Object -Maximum).Maximum)
+    Write-PhantomBarLine "CRITICAL" $critical $riskMax "Red"
+    Write-PhantomBarLine "HIGH" $high $riskMax "Yellow"
+    Write-PhantomBarLine "MEDIUM" $medium $riskMax "Cyan"
+    Write-PhantomBarLine "LOW" $low $riskMax "DarkGray"
+    Write-PhantomRule "FORENSIC COUNTERS" "Green"
+    Write-PhantomLine ("  DNS=" + $script:DNSCacheCount + " BITS=" + $script:BitsJobCount + " Firewall=" + $script:FirewallRuleCount + " Pipes=" + $script:NamedPipeCount + " JavaAttach=" + $script:JavaAttachCount + " USN=" + $script:USNTraceCount) "DarkGray"
+    Write-PhantomLine ("  HWID=" + $script:HWIDAnomalyCount + " USB=" + $script:USBTraceCount + " WMI=" + $script:WMIPersistenceCount + " Browser=" + $script:BrowserTraceCount + " Discord=" + $script:DiscordTraceCount + " Macros=" + $script:MacroProfileCount + " KDMapper=" + $script:KDMapperTraceCount) "DarkGray"
+    $topItems = @($sorted | Select-Object -First ([Math]::Min($Top, 24)))
+    if ($topItems.Count -gt 0) {
+        Write-PhantomRule "TOP EVIDENCE" "Green"
+        $i = 1
+        foreach ($f in $topItems) { Print-FindingBlock -F $f -Index $i; $i++ }
+    } else {
+        Write-PhantomBox "TOP EVIDENCE" @("No strong cheat indicators were found by the local evidence engine.") "Green"
+    }
+    if ($ShowIgnored -and $script:Ignored.Count -gt 0) {
+        Write-PhantomRule "IGNORED TRUSTED OR WEAK" "DarkGray"
+        $j = 1
+        foreach ($x in ($script:Ignored | Sort-Object Score -Descending | Select-Object -First 18)) { Print-FindingBlock -F $x -Index $j; $j++ }
+    }
+}
+
+function Main {
+    if ($SelfTest) { Test-SelfSyntax }
+    $script:Version = "21.0.0"
+    $script:StartTime = Get-Date
+    $script:AllowVerboseScanOutput = $false
+    $script:UiNoProgress = $true
+    $script:UiWidth = [Math]::Max(110, [Math]::Min(160, [int]$UiWidth))
+    $script:UiPhaseTotal = 11
+    $script:UiPhaseIndex = 0
+    $script:ScreenGuardBlocked = $false
+    $targetMinutes = [Math]::Min(5, [Math]::Max(3, [int]$MaxMinutes))
+    Set-Variable -Name MaxMinutes -Scope Script -Value $targetMinutes
+    if ($MaxCandidates -gt 3400) { Set-Variable -Name MaxCandidates -Scope Script -Value 3400 }
+    if ($Fast) { Set-Variable -Name MaxCandidates -Scope Script -Value ([Math]::Min($MaxCandidates, 1500)) }
+    if ($FullSystem) {
+        Set-Variable -Name Deep -Scope Script -Value $true
+        Set-Variable -Name Forensic -Scope Script -Value $true
+        Set-Variable -Name HuntSystem32 -Scope Script -Value $true
+        Set-Variable -Name AllDrives -Scope Script -Value $true
+    }
+    if ($Fast) { Set-Variable -Name Forensic -Scope Script -Value $true }
+    $script:Deadline = (Get-Date).AddMinutes($MaxMinutes)
+    Initialize-Workspace
+    $adminProbe = Test-IsAdministratorV15
+    $script:IsElevated = [bool]$adminProbe.IsAdmin
+    $script:AdminMethod = [string]$adminProbe.Method
+    $script:AdminChecks = [string]$adminProbe.Checks
+    Show-Banner
+    Start-UiPhase "Screen privacy" ""
+    Analyze-ScreenPrivacyGuardV17
+    if ($script:ScreenGuardBlocked) { return }
+    Start-UiPhase "Brain model" ""
+    Initialize-BrainTokens
+    Start-UiPhase "Live execution" ""
+    Analyze-RunningProcesses
+    Analyze-ProcessModules
+    Start-UiPhase "Persistence" ""
+    Analyze-AutorunsRegistry
+    Analyze-ScheduledTasksDeep
+    Analyze-IFEODeep
+    Analyze-WMIAndIFEOPersistenceV13
+    Start-UiPhase "Network" ""
+    Analyze-HostsNetworkAndDrivers
+    Analyze-DNSCacheV12
+    Analyze-BitsJobsV12
+    Analyze-FirewallRulesV12
+    Analyze-NamedPipesV12
+    Start-UiPhase "Minecraft" ""
+    Analyze-JavaAttachArtifactsV12
+    Analyze-LwjglIntegrityV12
+    Analyze-DeletedAndExecutionTraces
+    Start-UiPhase "Device" ""
+    Analyze-HWIDSpoofingV13
+    Analyze-KDMapperAndVulnerableDriverTracesV13
+    Analyze-USBForensicsV13
+    Analyze-PeripheralMacroProfilesV13
+    Start-UiPhase "System" ""
+    Analyze-ProcessParentAndAntiEvasionV12
+    Analyze-SystemFolderAnomalies
+    Analyze-VMIndicators
+    Start-UiPhase "Files" ""
+    Search-FileSystemCandidates
+    Start-UiPhase "Signals" ""
+    Analyze-AlternateDataStreamsForCandidates
+    if ((Get-SecondsLeftV16) -gt 70) { Analyze-BrowserDownloadTracesV13 }
+    if ((Get-SecondsLeftV16) -gt 55) { Analyze-DiscordCacheV13 }
+    if ((Get-SecondsLeftV16) -gt 40) { Invoke-YaraOptional; Invoke-AmsiOptional; Invoke-VirusTotalOptional }
+    Start-UiPhase "Chains" ""
+    Analyze-BehavioralChainsV12
+    Analyze-BehavioralChainsV13
+    Start-UiPhase "Final" ""
+    Show-FinalVerdict
 }
 
 try {
     Main
+} catch {
+    Write-PhantomLine "" "DarkGray"
+    Write-PhantomBox "ERROR" @(
+        "The scanner hit a runtime error, but cleanup will still run.",
+        "Message: " + (New-PhantomText ([string]$_.Exception.Message) 120)
+    ) "Red"
 } finally {
     Remove-Workspace
 }
