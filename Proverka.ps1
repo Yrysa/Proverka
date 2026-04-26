@@ -57,15 +57,16 @@ param(
     [switch]$NoProgress,
     [switch]$ScreenPrivacyGuard,
     [switch]$NoScreenPrivacyGuard,
-    [ValidateSet("Warn","Pause","Exit")]
+    [ValidateSet("Warn","Pause","Exit","Block")]
     [string]$ScreenGuardMode = "Warn",
     [int]$ScreenGuardPauseSeconds = 15,
+    [int]$ScreenGuardCountdownSeconds = 5,
     [int]$UiWidth = 100
 )
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = "Continue"
-$script:Version = "15.0.0"
+$script:Version = "20.0.0"
 $script:StartTime = Get-Date
 $script:Deadline = $script:StartTime.AddMinutes([Math]::Max(2,$MaxMinutes))
 $script:TempRoot = Join-Path $env:TEMP ("YRYS_CHECKER_" + ([Guid]::NewGuid().ToString("N")))
@@ -1872,7 +1873,7 @@ function Analyze-NamedPipesV12 {
                 $script:NamedPipeCount++
                 $score = 42
                 if ($hits.Count -gt 0) { $score += 30 }
-                Add-Finding -Object ("Named pipe: " + $name) -ObjectType "NAMED_PIPE" -Score $score -Severity (Convert-ScoreToSeverity $score) -Class "runtime_ipc_indicator" -Evidence (@("named pipe may indicate loader/client IPC", "token(s): " + ($hits -join ", "))) 
+                Add-Finding -Object ("Named pipe: " + $name) -ObjectType "NAMED_PIPE" -Score $score -Severity (Convert-ScoreToSeverity $score) -Class "runtime_ipc_indicator" -Evidence (@("named pipe may indicate loader/client IPC", "token(s): " + ($hits -join ", ")))
             }
         }
     } catch { $script:BlockedErrors++ }
@@ -1907,7 +1908,7 @@ function Analyze-JavaAttachArtifactsV12 {
                     $script:JavaAttachCount++
                     $score = 45
                     if ($hits.Count -gt 0) { $score += 30 }
-                    Add-Finding -Object ("jcmd JVM: " + $line.Trim()) -ObjectType "JAVA_JCMD" -Score $score -Severity (Convert-ScoreToSeverity $score) -Class "live_jvm_context" -Evidence (@("jcmd sees live JVM matching Minecraft or cheat token", "token(s): " + ($hits -join ", "))) 
+                    Add-Finding -Object ("jcmd JVM: " + $line.Trim()) -ObjectType "JAVA_JCMD" -Score $score -Severity (Convert-ScoreToSeverity $score) -Class "live_jvm_context" -Evidence (@("jcmd sees live JVM matching Minecraft or cheat token", "token(s): " + ($hits -join ", ")))
                 }
             }
         }
@@ -6288,7 +6289,7 @@ function Show-Banner {
     Write-NeonV16 "        | |  |  _ <   | |  ___) |    | |___|  _  | |__| |___| . \| |___|  _ <" "Red"
     Write-NeonV16 "        |_|  |_| \_\  |_| |____/      \____|_| |_|_____\____|_|\_\_____|_| \_\" "Red"
     Write-NeonV16 "" "DarkGray"
-    Write-NeonBoxV16 "NEBULA v19.0 :: FIVE-MINUTE FORENSIC AI" @(
+    Write-NeonBoxV16 "AURORA v19.0 :: FIVE-MINUTE FORENSIC AI" @(
         "Mode: " + $mode + " | time budget: " + $MaxMinutes + " min | candidates cap: " + $MaxCandidates,
         "Admin: " + $adminState,
         "UI: stable ASCII neon dashboard; no PowerShell progress overlay by default",
@@ -6590,7 +6591,7 @@ function Main {
 }
 
 
-$script:Version = "19.0.0"
+$script:Version = "20.0.0"
 $script:UiPhaseTotal = 11
 $script:ScreenSignals = New-Object System.Collections.Generic.List[object]
 
@@ -6654,10 +6655,10 @@ function Show-Banner {
     Write-StarV17 "  | |__| |_| |  _ <| |___" "DarkGreen"
     Write-StarV17 "   \____\___/|_| \_\_____|" "Green"
     Write-StarV17 "" "DarkGray"
-    Write-CosmicBoxV17 "NEBULA v19.0 :: CINEMATIC FORENSIC AI" @(
+    Write-CosmicBoxV17 "AURORA v19.0 :: CINEMATIC FORENSIC AI" @(
         "MODE " + $mode + "    TIME " + $MaxMinutes + "m    CANDIDATES " + $MaxCandidates,
         "ADMIN " + $adminState + "    SCREEN GUARD " + $privacy,
-        "NEBULA HUD ENABLED. LIVE OUTPUT IS MINIMAL; FINAL EVIDENCE IS PRIORITY."
+        "AURORA HUD ENABLED. LIVE OUTPUT IS MINIMAL; FINAL EVIDENCE IS PRIORITY."
     ) "Green"
     if (-not $script:IsElevated) {
         Write-CosmicBoxV17 "ADMIN CHECK" @(
@@ -6848,7 +6849,7 @@ function Write-NeonV16 {
     }
 }
 
-function Write-NebulaV19 {
+function Write-AuroraV19 {
     param([string]$Text = "", [string]$Color = "Gray", [switch]$NoNewline)
     try {
         if ($script:UiNoColor) { $Color = "Gray" }
@@ -6856,7 +6857,7 @@ function Write-NebulaV19 {
     } catch { Write-Host $Text }
 }
 
-function New-NebulaLineV19 {
+function New-AuroraLineV19 {
     param([string]$Left, [string]$Right = "", [int]$Width = 130)
     $w = [Math]::Max(98, [Math]::Min(156, $Width))
     $inner = $w - 4
@@ -6875,42 +6876,42 @@ function New-NebulaLineV19 {
     return "| " + $l.PadRight($inner) + " |"
 }
 
-function Write-NebulaBoxV19 {
+function Write-AuroraBoxV19 {
     param([string]$Title, [string[]]$Lines, [string]$Color = "Cyan")
     $w = [Math]::Max(98, [Math]::Min(156, $script:UiWidth))
     $top = "/" + ("*" * ($w-2)) + "\\"
     $mid = "+" + ("-" * ($w-2)) + "+"
     $bottom = "\\" + ("*" * ($w-2)) + "/"
-    Write-NebulaV19 $top $Color
+    Write-AuroraV19 $top $Color
     $t = "  " + $Title + "  "
     if ($t.Length -gt ($w-4)) { $t = $t.Substring(0,$w-7) + "..." }
     $left = [Math]::Max(0, [int](($w-2-$t.Length)/2))
     $right = [Math]::Max(0, $w-2-$left-$t.Length)
-    Write-NebulaV19 ("|" + (" "*$left) + $t + (" "*$right) + "|") $Color
-    Write-NebulaV19 $mid "DarkGray"
-    foreach ($line in @($Lines)) { Write-NebulaV19 (New-NebulaLineV19 $line "" $w) "Gray" }
-    Write-NebulaV19 $bottom $Color
+    Write-AuroraV19 ("|" + (" "*$left) + $t + (" "*$right) + "|") $Color
+    Write-AuroraV19 $mid "DarkGray"
+    foreach ($line in @($Lines)) { Write-AuroraV19 (New-AuroraLineV19 $line "" $w) "Gray" }
+    Write-AuroraV19 $bottom $Color
 }
 
-function Write-NebulaRuleV19 {
+function Write-AuroraRuleV19 {
     param([string]$Title = "", [string]$Color = "DarkCyan")
     $w = [Math]::Max(98, [Math]::Min(156, $script:UiWidth))
-    if ([string]::IsNullOrWhiteSpace($Title)) { Write-NebulaV19 (("-" * $w)) $Color; return }
+    if ([string]::IsNullOrWhiteSpace($Title)) { Write-AuroraV19 (("-" * $w)) $Color; return }
     $label = "[ " + $Title + " ]"
     if ($label.Length -gt ($w - 6)) { $label = $label.Substring(0, $w - 9) + "..." }
     $left = [Math]::Max(2, [int](($w - $label.Length) / 2))
     $right = [Math]::Max(2, $w - $left - $label.Length)
-    Write-NebulaV19 (("=" * $left) + $label + ("=" * $right)) $Color
+    Write-AuroraV19 (("=" * $left) + $label + ("=" * $right)) $Color
 }
 
-function Write-NebulaBootV19 {
+function Write-AuroraBootV19 {
     if ($script:UiCompact -or $script:UiNoColor) { return }
     $frames = @(".       ", "..      ", "...     ", "....    ", "*....   ", "**...   ", "***..   ", "****.   ", "*****   ", " ****   ", "  ***   ", "   **   ", "    *   ")
     foreach ($f in $frames) {
-        Write-NebulaV19 ("`r  NEBULA FIELD " + $f + " calibrating visual engine") "DarkCyan" -NoNewline
+        Write-AuroraV19 ("`r  AURORA FIELD " + $f + " calibrating visual engine") "DarkCyan" -NoNewline
         try { Start-Sleep -Milliseconds 28 } catch {}
     }
-    Write-NebulaV19 "`r  NEBULA FIELD ***** visual engine online                " "Green"
+    Write-AuroraV19 "`r  AURORA FIELD ***** visual engine online                " "Green"
 }
 
 function Start-UiPhase {
@@ -6923,7 +6924,7 @@ function Start-UiPhase {
     $pct = [int](($idx / $total) * 24)
     $bar = ("#" * $pct).PadRight(24, ".")
     $time = Get-TimeBoxV16
-    Write-NebulaV19 ("  [" + $bar + "] WARP " + $idx + "/" + $total + "   T-" + $time) "DarkCyan"
+    Write-AuroraV19 ("  [" + $bar + "] WARP " + $idx + "/" + $total + "   T-" + $time) "DarkCyan"
 }
 
 function Show-Banner {
@@ -6931,25 +6932,25 @@ function Show-Banner {
     $mode = if ($FullSystem) { "FULLSYSTEM" } elseif ($Deep) { "DEEP" } elseif ($Fast) { "FAST" } else { "SMART" }
     $adminState = Get-CosmicAdminTextV17
     $privacy = if ($NoScreenPrivacyGuard) { "OFF" } else { "ON / " + $ScreenGuardMode }
-    Write-NebulaBootV19
-    Write-NebulaV19 "" "DarkGray"
-    Write-NebulaV19 "        .        *        .          Y R Y S   N E B U L A          .        *        ." "DarkCyan"
-    Write-NebulaV19 "" "DarkGray"
-    Write-NebulaV19 "  ██╗   ██╗██████╗ ██╗   ██╗███████╗      ███╗   ██╗███████╗██████╗ ██╗   ██╗██╗      █████╗" "Cyan"
-    Write-NebulaV19 "  ╚██╗ ██╔╝██╔══██╗╚██╗ ██╔╝██╔════╝      ████╗  ██║██╔════╝██╔══██╗██║   ██║██║     ██╔══██╗" "DarkCyan"
-    Write-NebulaV19 "   ╚████╔╝ ██████╔╝ ╚████╔╝ ███████╗      ██╔██╗ ██║█████╗  ██████╔╝██║   ██║██║     ███████║" "Green"
-    Write-NebulaV19 "    ╚██╔╝  ██╔══██╗  ╚██╔╝  ╚════██║      ██║╚██╗██║██╔══╝  ██╔══██╗██║   ██║██║     ██╔══██║" "DarkGreen"
-    Write-NebulaV19 "     ██║   ██║  ██║   ██║   ███████║      ██║ ╚████║███████╗██████╔╝╚██████╔╝███████╗██║  ██║" "Green"
-    Write-NebulaV19 "     ╚═╝   ╚═╝  ╚═╝   ╚═╝   ╚══════╝      ╚═╝  ╚═══╝╚══════╝╚═════╝  ╚═════╝ ╚══════╝╚═╝  ╚═╝" "DarkCyan"
-    Write-NebulaV19 "" "DarkGray"
-    Write-NebulaBoxV19 "v19.0 :: NEBULA VISUAL FORENSIC AI" @(
+    Write-AuroraBootV19
+    Write-AuroraV19 "" "DarkGray"
+    Write-AuroraV19 "        .        *        .          Y R Y S   N E B U L A          .        *        ." "DarkCyan"
+    Write-AuroraV19 "" "DarkGray"
+    Write-AuroraV19 "                            " "Cyan"
+    Write-AuroraV19 "                    " "DarkCyan"
+    Write-AuroraV19 "                       " "Green"
+    Write-AuroraV19 "                          " "DarkGreen"
+    Write-AuroraV19 "                         " "Green"
+    Write-AuroraV19 "                             " "DarkCyan"
+    Write-AuroraV19 "" "DarkGray"
+    Write-AuroraBoxV19 "v19.0 :: AURORA VISUAL FORENSIC AI" @(
         "MODE " + $mode + "    TIME " + $MaxMinutes + "m    CANDIDATES " + $MaxCandidates + "    WIDTH " + $script:UiWidth,
         "ADMIN " + $adminState + "    SCREEN GUARD " + $privacy,
-        "STYLE cinematic nebula HUD    OUTPUT visual pulse + final evidence only",
+        "STYLE cinematic aurora HUD    OUTPUT visual pulse + final evidence only",
         "PRIVACY no permanent report, temp workspace removed on exit"
     ) "Cyan"
     if (-not $script:IsElevated) {
-        Write-NebulaBoxV19 "ADMIN CHECK" @(
+        Write-AuroraBoxV19 "ADMIN CHECK" @(
             "Admin token was not confirmed. Scan continues with fallback providers.",
             "Protected process, driver, prefetch and registry coverage can be partial."
         ) "Yellow"
@@ -6982,44 +6983,44 @@ function Print-FindingBlock {
     $bottom = "\\" + ("=" * ($w-2)) + "/"
     $title = "#" + $Index + "  " + $F.Severity + "  RISK " + $F.Score + "  CONF " + $F.Confidence
     if ($script:UiCompact) {
-        Write-NebulaV19 (("[" + $Index + "] " + $F.Severity + " risk=" + $F.Score + " class=" + $F.Class + " :: " + (Truncate-UiText $F.Object 95))) $color
+        Write-AuroraV19 (("[" + $Index + "] " + $F.Severity + " risk=" + $F.Score + " class=" + $F.Class + " :: " + (Truncate-UiText $F.Object 95))) $color
         return
     }
-    Write-NebulaV19 $top $color
-    Write-NebulaV19 (New-NebulaLineV19 $title ("TYPE " + $F.ObjectType) $w) $color
-    Write-NebulaV19 $mid "DarkGray"
-    Write-NebulaV19 (New-NebulaLineV19 ("CLASS " + $F.Class) ("TRACE " + [bool]$F.DeletedTrace) $w) "Gray"
-    Write-NebulaV19 (New-NebulaLineV19 ("OBJECT " + $F.Object) "" $w) "White"
-    if ($F.Sha256) { Write-NebulaV19 (New-NebulaLineV19 ("SHA256 " + $F.Sha256) "" $w) "DarkGray" }
+    Write-AuroraV19 $top $color
+    Write-AuroraV19 (New-AuroraLineV19 $title ("TYPE " + $F.ObjectType) $w) $color
+    Write-AuroraV19 $mid "DarkGray"
+    Write-AuroraV19 (New-AuroraLineV19 ("CLASS " + $F.Class) ("TRACE " + [bool]$F.DeletedTrace) $w) "Gray"
+    Write-AuroraV19 (New-AuroraLineV19 ("OBJECT " + $F.Object) "" $w) "White"
+    if ($F.Sha256) { Write-AuroraV19 (New-AuroraLineV19 ("SHA256 " + $F.Sha256) "" $w) "DarkGray" }
     try {
         $profile = $F.EvidenceProfile
         if ($profile.Positive.Count -gt 0) {
-            Write-NebulaV19 (New-NebulaLineV19 "SIGNAL MATRIX" "" $w) "Cyan"
-            foreach ($e in ($profile.Positive | Select-Object -First 7)) { Write-NebulaV19 (New-NebulaLineV19 (" + " + $e) "" $w) "Gray" }
+            Write-AuroraV19 (New-AuroraLineV19 "SIGNAL MATRIX" "" $w) "Cyan"
+            foreach ($e in ($profile.Positive | Select-Object -First 7)) { Write-AuroraV19 (New-AuroraLineV19 (" + " + $e) "" $w) "Gray" }
         }
         if ($profile.Context.Count -gt 0) {
-            Write-NebulaV19 (New-NebulaLineV19 "CONTEXT FIELD" "" $w) "DarkCyan"
-            foreach ($e in ($profile.Context | Select-Object -First 4)) { Write-NebulaV19 (New-NebulaLineV19 (" ~ " + $e) "" $w) "DarkGray" }
+            Write-AuroraV19 (New-AuroraLineV19 "CONTEXT FIELD" "" $w) "DarkCyan"
+            foreach ($e in ($profile.Context | Select-Object -First 4)) { Write-AuroraV19 (New-AuroraLineV19 (" ~ " + $e) "" $w) "DarkGray" }
         }
         if ($profile.Mitigation.Count -gt 0) {
-            Write-NebulaV19 (New-NebulaLineV19 "FALSE-POSITIVE SHIELD" "" $w) "Green"
-            foreach ($e in ($profile.Mitigation | Select-Object -First 4)) { Write-NebulaV19 (New-NebulaLineV19 (" - " + $e) "" $w) "DarkGray" }
+            Write-AuroraV19 (New-AuroraLineV19 "FALSE-POSITIVE SHIELD" "" $w) "Green"
+            foreach ($e in ($profile.Mitigation | Select-Object -First 4)) { Write-AuroraV19 (New-AuroraLineV19 (" - " + $e) "" $w) "DarkGray" }
         }
     } catch {
-        foreach ($e in (@($F.Evidence) | Select-Object -First 7)) { Write-NebulaV19 (New-NebulaLineV19 (" + " + $e) "" $w) "Gray" }
+        foreach ($e in (@($F.Evidence) | Select-Object -First 7)) { Write-AuroraV19 (New-AuroraLineV19 (" + " + $e) "" $w) "Gray" }
     }
-    if ($F.Recommendation) { Write-NebulaV19 (New-NebulaLineV19 ("NEXT " + $F.Recommendation) "" $w) "White" }
-    Write-NebulaV19 $bottom $color
+    if ($F.Recommendation) { Write-AuroraV19 (New-AuroraLineV19 ("NEXT " + $F.Recommendation) "" $w) "White" }
+    Write-AuroraV19 $bottom $color
 }
 
-function Write-NebulaBarLineV19 {
+function Write-AuroraBarLineV19 {
     param([string]$Label, [int]$Value, [int]$Max, [string]$Color)
     $width = 42
     $fill = 0
     if ($Max -gt 0) { $fill = [int](($Value / $Max) * $width) }
     $fill = [Math]::Max(0, [Math]::Min($width, $fill))
     $bar = ("#" * $fill).PadRight($width, ".")
-    Write-NebulaV19 (("  " + $Label.PadRight(10) + " [" + $bar + "] " + $Value)) $Color
+    Write-AuroraV19 (("  " + $Label.PadRight(10) + " [" + $bar + "] " + $Value)) $Color
 }
 
 function Show-FinalVerdict {
@@ -7033,34 +7034,34 @@ function Show-FinalVerdict {
     $verdict = "CLEAN"
     $vcolor = "Green"
     if ($critical -gt 0) { $verdict = "CHEAT LIKELY"; $vcolor = "Red" } elseif ($high -gt 0) { $verdict = "SUSPICIOUS"; $vcolor = "Yellow" } elseif ($medium -gt 0) { $verdict = "WEAK SIGNALS"; $vcolor = "Cyan" }
-    Write-NebulaV19 "" "DarkGray"
-    Write-NebulaRuleV19 "NEBULA FINAL" $vcolor
-    Write-NebulaBoxV19 "VERDICT" @(
+    Write-AuroraV19 "" "DarkGray"
+    Write-AuroraRuleV19 "AURORA FINAL" $vcolor
+    Write-AuroraBoxV19 "VERDICT" @(
         "RESULT " + $verdict + "    RUNTIME " + $elapsed + " sec    TARGET <= 300 sec",
         "CRITICAL " + $critical + "    HIGH " + $high + "    MEDIUM " + $medium + "    LOW " + $low,
         "CANDIDATES " + $script:CandidatesSeen + "    ANALYZED " + $script:FilesAnalyzed + "    TRUSTED IGNORED " + $script:TrustedIgnoredCount,
         "SCREEN SIGNALS " + $privacyCount + "    ADMIN " + (Get-CosmicAdminTextV17),
         "No permanent report was created. Temporary workspace is removed on exit."
     ) $vcolor
-    Write-NebulaRuleV19 "RISK CONSTELLATION" "White"
+    Write-AuroraRuleV19 "RISK CONSTELLATION" "White"
     $riskMax = [Math]::Max(1, (@($critical,$high,$medium,$low) | Measure-Object -Maximum).Maximum)
-    Write-NebulaBarLineV19 "CRITICAL" $critical $riskMax "Red"
-    Write-NebulaBarLineV19 "HIGH" $high $riskMax "Yellow"
-    Write-NebulaBarLineV19 "MEDIUM" $medium $riskMax "Cyan"
-    Write-NebulaBarLineV19 "LOW" $low $riskMax "DarkGray"
-    Write-NebulaRuleV19 "FORENSIC COUNTERS" "White"
-    Write-NebulaV19 ("  DNS=" + $script:DNSCacheCount + " BITS=" + $script:BitsJobCount + " Firewall=" + $script:FirewallRuleCount + " Pipes=" + $script:NamedPipeCount + " JavaAttach=" + $script:JavaAttachCount + " USN=" + $script:USNTraceCount) "DarkGray"
-    Write-NebulaV19 ("  HWID=" + $script:HWIDAnomalyCount + " USB=" + $script:USBTraceCount + " WMI=" + $script:WMIPersistenceCount + " Browser=" + $script:BrowserTraceCount + " Discord=" + $script:DiscordTraceCount + " Macros=" + $script:MacroProfileCount + " KDMapper=" + $script:KDMapperTraceCount) "DarkGray"
+    Write-AuroraBarLineV19 "CRITICAL" $critical $riskMax "Red"
+    Write-AuroraBarLineV19 "HIGH" $high $riskMax "Yellow"
+    Write-AuroraBarLineV19 "MEDIUM" $medium $riskMax "Cyan"
+    Write-AuroraBarLineV19 "LOW" $low $riskMax "DarkGray"
+    Write-AuroraRuleV19 "FORENSIC COUNTERS" "White"
+    Write-AuroraV19 ("  DNS=" + $script:DNSCacheCount + " BITS=" + $script:BitsJobCount + " Firewall=" + $script:FirewallRuleCount + " Pipes=" + $script:NamedPipeCount + " JavaAttach=" + $script:JavaAttachCount + " USN=" + $script:USNTraceCount) "DarkGray"
+    Write-AuroraV19 ("  HWID=" + $script:HWIDAnomalyCount + " USB=" + $script:USBTraceCount + " WMI=" + $script:WMIPersistenceCount + " Browser=" + $script:BrowserTraceCount + " Discord=" + $script:DiscordTraceCount + " Macros=" + $script:MacroProfileCount + " KDMapper=" + $script:KDMapperTraceCount) "DarkGray"
     $topItems = @($sorted | Select-Object -First ([Math]::Min($Top, 28)))
     if ($topItems.Count -gt 0) {
-        Write-NebulaRuleV19 "TOP EVIDENCE" "Magenta"
+        Write-AuroraRuleV19 "TOP EVIDENCE" "Magenta"
         $i = 1
         foreach ($f in $topItems) { Print-FindingBlock -F $f -Index $i; $i++ }
     } else {
-        Write-NebulaBoxV19 "TOP EVIDENCE" @("No strong cheat indicators were found by the local evidence engine.") "Green"
+        Write-AuroraBoxV19 "TOP EVIDENCE" @("No strong cheat indicators were found by the local evidence engine.") "Green"
     }
     if ($ShowIgnored -and $script:Ignored.Count -gt 0) {
-        Write-NebulaRuleV19 "IGNORED TRUSTED / WEAK" "DarkGray"
+        Write-AuroraRuleV19 "IGNORED TRUSTED / WEAK" "DarkGray"
         $j = 1
         foreach ($x in ($script:Ignored | Sort-Object Score -Descending | Select-Object -First 18)) { Print-FindingBlock -F $x -Index $j; $j++ }
     }
@@ -7068,7 +7069,7 @@ function Show-FinalVerdict {
 
 function Main {
     if ($SelfTest) { Test-SelfSyntax }
-    $script:Version = "19.0.0"
+    $script:Version = "20.0.0"
     $script:StartTime = Get-Date
     $script:AllowVerboseScanOutput = $false
     $script:UiNoProgress = $true
@@ -7135,6 +7136,120 @@ function Main {
     Analyze-BehavioralChainsV13
     Start-UiPhase "Final dashboard" "verdict, risk bars and evidence cards"
     Show-FinalVerdict
+}
+
+
+function Write-AuroraBootV20 {
+    if ($script:UiCompact -or $script:UiNoColor) { return }
+    $frames = @(".       ", "..      ", "...     ", "....    ", "*....   ", "**...   ", "***..   ", "****.   ", "*****   ", " ****   ", "  ***   ", "   **   ", "    *   ")
+    foreach ($f in $frames) {
+        Write-AuroraV19 ("`r  AURORA FIELD " + $f + " visual engine online") "DarkGreen" -NoNewline
+        try { Start-Sleep -Milliseconds 22 } catch {}
+    }
+    Write-AuroraV19 "`r  AURORA FIELD ***** visual engine online                " "Green"
+}
+
+function Start-UiPhase {
+    param([string]$Name, [string]$Details = "")
+    $script:UiPhaseIndex++
+    $script:UiLastStatus = $Name
+    if ($script:UiCompact) { return }
+    $total = [Math]::Max(1, [int]$script:UiPhaseTotal)
+    $idx = [Math]::Min($total, [int]$script:UiPhaseIndex)
+    $pct = [int](($idx / $total) * 36)
+    $bar = ("#" * $pct).PadRight(36, ".")
+    $time = Get-TimeBoxV16
+    $pulse = @(".", "..", "...", "*..", "**.", "***")[$idx % 6]
+    Write-AuroraV19 ("  AURORA WARP [" + $bar + "] " + $idx + "/" + $total + "  T-" + $time + "  " + $pulse) "Green"
+}
+
+function Show-Banner {
+    Clear-Host
+    $mode = if ($FullSystem) { "FULLSYSTEM" } elseif ($Deep) { "DEEP" } elseif ($Fast) { "FAST" } else { "SMART" }
+    $adminState = Get-CosmicAdminTextV17
+    $privacy = if ($NoScreenPrivacyGuard) { "OFF" } else { "ON / " + $ScreenGuardMode }
+    Write-AuroraBootV20
+    Write-AuroraV19 "" "DarkGray"
+    Write-AuroraV19 "                         .     *     .       Y R Y S   A U R O R A       .     *     ." "DarkCyan"
+    Write-AuroraV19 "" "DarkGray"
+    Write-AuroraV19 "        __   __  ____   __   __  ____        _    _   _  ____   ___   ____      _" "Green"
+    Write-AuroraV19 "        \\ \\ / / |  _ \\  \\ \\ / / / ___|      / \\  | | | |/ ___| / _ \\ |  _ \\    / \\" "Green"
+    Write-AuroraV19 "         \\ V /  | |_) |  \\ V /  \\___ \\     / _ \\ | | | | |    | | | || |_) |  / _ \\" "Cyan"
+    Write-AuroraV19 "          | |   |  _ <    | |    ___) |   / ___ \\| |_| | |___ | |_| ||  _ <  / ___ \\" "Cyan"
+    Write-AuroraV19 "          |_|   |_| \\_\\   |_|   |____/   /_/   \\_\\\\___/ \\____| \\___/ |_| \\_\\/_/   \\_\\" "DarkCyan"
+    Write-AuroraV19 "" "DarkGray"
+    Write-AuroraBoxV19 "AUTONOMOUS FORENSIC AI v20" @(
+        "MODE " + $mode + "    TIME " + $MaxMinutes + "m    CANDIDATES " + $MaxCandidates + "    WIDTH " + $script:UiWidth,
+        "ADMIN " + $adminState + "    SCREEN GUARD " + $privacy,
+        "STYLE green aurora HUD    OUTPUT visual pulse + final evidence",
+        "PRIVACY no permanent report, temp workspace removed on exit"
+    ) "Green"
+    if (-not $script:IsElevated) {
+        Write-AuroraBoxV19 "ADMIN CHECK" @(
+            "Admin token was not confirmed. Scan continues with fallback providers.",
+            "Protected process, driver, prefetch and registry coverage can be partial."
+        ) "Yellow"
+    }
+}
+
+function Get-ProcessSnapshotForScreenV17 {
+    $items = New-Object System.Collections.Generic.List[object]
+    try {
+        foreach ($p in Get-CimInstance Win32_Process -ErrorAction Stop) {
+            [void]$items.Add([pscustomobject]@{ Name=[string]$p.Name; ProcessId=[int]$p.ProcessId; Path=[string]$p.ExecutablePath; CommandLine=[string]$p.CommandLine })
+        }
+        return ,$items.ToArray()
+    } catch {}
+    try {
+        foreach ($p in Get-Process -ErrorAction SilentlyContinue) {
+            [void]$items.Add([pscustomobject]@{ Name=[string]$p.ProcessName; ProcessId=[int]$p.Id; Path=""; CommandLine="" })
+        }
+    } catch {}
+    return ,$items.ToArray()
+}
+
+function Analyze-ScreenPrivacyGuardV17 {
+    if ($NoScreenPrivacyGuard) { return }
+    $script:ScreenSignals.Clear()
+    $rules = Get-ScreenProcessRulesV17
+    $processes = @(Get-ProcessSnapshotForScreenV17)
+    foreach ($p in $processes) {
+        $name = ([string]$p.Name).ToLowerInvariant()
+        $cmd = ([string]$p.CommandLine).ToLowerInvariant()
+        foreach ($r in $rules) {
+            $rn = ([string]$r.Name).ToLowerInvariant()
+            if ($name -eq $rn -or $name -eq ($rn + ".exe") -or $name.Contains($rn) -or $cmd.Contains($rn)) {
+                $obj = [pscustomobject]@{ Label=$r.Label; Process=$p.Name; Pid=$p.ProcessId; Type=$r.Type; Score=$r.Score; Path=$p.Path; Color=$r.Color }
+                [void]$script:ScreenSignals.Add($obj)
+                break
+            }
+        }
+    }
+    if ($script:ScreenSignals.Count -eq 0) { return }
+    $top = @($script:ScreenSignals | Sort-Object Score -Descending | Select-Object -First 8)
+    foreach ($x in $top) {
+        if ([int]$x.Score -ge 75) {
+            Add-Finding -Object ($x.Label + " PID " + $x.Pid) -ObjectType "SCREEN_PRIVACY" -Score ([int]$x.Score) -Severity (Convert-ScoreToSeverity ([int]$x.Score)) -Class "screen_capture_context" -Evidence @("screen capture capable process is running", "process type: " + $x.Type, "privacy context only; not a cheat proof")
+        }
+    }
+    if ($ScreenGuardMode -eq "Warn") { return }
+    $seconds = [Math]::Max(3, [Math]::Min(10, [int]$ScreenGuardCountdownSeconds))
+    Write-AuroraBoxV19 "SCREEN PRIVACY" @(
+        "Capture, stream or remote-control software was detected.",
+        "Detected items: " + $script:ScreenSignals.Count,
+        "The scanner will not close other apps. Stop sharing or recording manually."
+    ) "Yellow"
+    for ($i=$seconds; $i -ge 1; $i--) {
+        Write-AuroraV19 ("  PRIVACY COUNTDOWN " + $i + "s") "Yellow"
+        try { Start-Sleep -Seconds 1 } catch {}
+    }
+    if ($ScreenGuardMode -eq "Pause") {
+        try { Start-Sleep -Seconds ([Math]::Max(3, [Math]::Min(90, $ScreenGuardPauseSeconds))) } catch {}
+        return
+    }
+    if ($ScreenGuardMode -eq "Exit" -or $ScreenGuardMode -eq "Block") {
+        throw "ScreenPrivacyGuardExit"
+    }
 }
 
 try {
