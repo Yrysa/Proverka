@@ -6275,11 +6275,6 @@ function Start-UiPhase {
     param([string]$Name, [string]$Details = "")
     $script:UiPhaseIndex++
     $script:UiLastStatus = $Name
-    $left = Get-TimeBoxV16
-    $phase = ("PHASE " + $script:UiPhaseIndex + "/" + $script:UiPhaseTotal).PadRight(11)
-    $line = "  " + $phase + "  " + $Name.PadRight(28) + "  time left " + $left
-    Write-UiRule $line "DarkMagenta"
-    if ($Details) { Write-NeonV16 ("  " + $Details) "DarkCyan" }
 }
 
 function Show-Banner {
@@ -6595,7 +6590,7 @@ function Main {
 }
 
 
-$script:Version = "17.0.0"
+$script:Version = "18.0.0"
 $script:UiPhaseTotal = 11
 $script:ScreenSignals = New-Object System.Collections.Generic.List[object]
 
@@ -6648,29 +6643,26 @@ function Get-CosmicAdminTextV17 {
 
 function Show-Banner {
     Clear-Host
-    $mode = if ($FullSystem) { "FULLSYSTEM" } elseif ($Deep) { "DEEP" } elseif ($Fast) { "FAST" } else { "SMART" }
+    $mode = if ($FullSystem) { "FULLSYSTEM" } elseif ($Deep) { "DEEP" } elseif ($Fast) { "FAST" } else { "CORE" }
     $adminState = Get-CosmicAdminTextV17
-    $privacy = if ($NoScreenPrivacyGuard) { "OFF" } else { "ON / " + $ScreenGuardMode.ToUpperInvariant() }
+    $privacy = if ($NoScreenPrivacyGuard) { "OFF" } else { "ON" }
     Write-StarV17 "" "DarkGray"
-    Write-StarV17 "        .        *        .      Y R Y S   C H E C K E R       .        *        ." "DarkMagenta"
-    Write-StarV17 "    ____  _   _ _____ ____  _  __    ____ ___  ____  _____     ____ ___  ____  _____" "Red"
-    Write-StarV17 "   / ___|| | | | ____/ ___|| |/ /   / ___/ _ \|  _ \| ____|   / ___/ _ \|  _ \| ____|" "Red"
-    Write-StarV17 "   \___ \| |_| |  _|| |    | ' /   | |  | | | | |_) |  _|    | |  | | | | |_) |  _|" "Magenta"
-    Write-StarV17 "    ___) |  _  | |__| |___ | . \   | |__| |_| |  _ <| |___   | |__| |_| |  _ <| |___" "Magenta"
-    Write-StarV17 "   |____/|_| |_|_____\____||_|\_\   \____\___/|_| \_\_____|   \____\___/|_| \_\_____|" "DarkRed"
+    Write-StarV17 "        Y R Y S   C H E C K E R" "Green"
+    Write-StarV17 "    ____ ___  ____  _____" "Green"
+    Write-StarV17 "   / ___/ _ \|  _ \| ____|" "Green"
+    Write-StarV17 "  | |  | | | | |_) |  _|" "DarkGreen"
+    Write-StarV17 "  | |__| |_| |  _ <| |___" "DarkGreen"
+    Write-StarV17 "   \____\___/|_| \_\_____|" "Green"
     Write-StarV17 "" "DarkGray"
-    Write-CosmicBoxV17 "COSMIC CONTROL v17.0 :: FIVE-MINUTE AUTONOMOUS FORENSIC AI" @(
-        "MODE " + $mode + "    TIME " + $MaxMinutes + "m    CANDIDATES " + $MaxCandidates + "    WIDTH " + $script:UiWidth,
-        "ADMIN " + $adminState,
-        "SCREEN PRIVACY GUARD " + $privacy,
-        "UI engine: stable ASCII cosmic cards, no Write-Progress overlay, no permanent reports",
-        "Workspace: temporary only; removed automatically at shutdown"
-    ) "Magenta"
+    Write-CosmicBoxV17 "CORE v18.0 :: RESULTS ONLY FORENSIC AI" @(
+        "MODE " + $mode + "    TIME " + $MaxMinutes + "m    CANDIDATES " + $MaxCandidates,
+        "ADMIN " + $adminState + "    SCREEN GUARD " + $privacy,
+        "RUNNING SILENT CORE. ONLY FINAL RESULTS WILL BE SHOWN."
+    ) "Green"
     if (-not $script:IsElevated) {
-        Write-CosmicBoxV17 "ADMIN PROVIDER WARNING" @(
-            "Elevated token was not confirmed by Windows APIs.",
-            "The scan continues with fallbacks, but protected providers may be partial.",
-            "Run Windows Terminal or PowerShell as Administrator for full driver, prefetch and process coverage."
+        Write-CosmicBoxV17 "ADMIN CHECK" @(
+            "Admin token was not confirmed. Scan continues with fallback providers.",
+            "Protected process, driver, prefetch and registry coverage may be partial."
         ) "Yellow"
     }
 }
@@ -6706,19 +6698,19 @@ function Get-ScreenProcessRulesV17 {
 }
 
 function Get-ProcessSnapshotForScreenV17 {
-    $items = New-Object System.Collections.Generic.List[object]
+    $items = @()
     try {
         foreach ($p in Get-CimInstance Win32_Process -ErrorAction Stop) {
-            [void]$items.Add([pscustomobject]@{ Name=[string]$p.Name; ProcessId=[int]$p.ProcessId; Path=[string]$p.ExecutablePath; CommandLine=[string]$p.CommandLine })
+            $items += [pscustomobject]@{ Name=[string]$p.Name; ProcessId=[int]$p.ProcessId; Path=[string]$p.ExecutablePath; CommandLine=[string]$p.CommandLine }
         }
-        return @($items)
+        return $items
     } catch {}
     try {
         foreach ($p in Get-Process -ErrorAction SilentlyContinue) {
-            [void]$items.Add([pscustomobject]@{ Name=[string]$p.ProcessName; ProcessId=[int]$p.Id; Path=""; CommandLine="" })
+            $items += [pscustomobject]@{ Name=[string]$p.ProcessName; ProcessId=[int]$p.Id; Path=""; CommandLine="" }
         }
     } catch {}
-    return @($items)
+    return $items
 }
 
 function Analyze-ScreenPrivacyGuardV17 {
@@ -6738,26 +6730,15 @@ function Analyze-ScreenPrivacyGuardV17 {
             }
         }
     }
-    if ($script:ScreenSignals.Count -eq 0) {
-        Write-CosmicBoxV17 "SCREEN PRIVACY GUARD" @("No active screen recorder, screen share app or remote-control process was detected by process scan.") "Green"
-        return
-    }
+    if ($script:ScreenSignals.Count -eq 0) { return }
     $top = @($script:ScreenSignals | Sort-Object Score -Descending | Select-Object -First 8)
-    $lines = New-Object System.Collections.Generic.List[string]
-    [void]$lines.Add("Detected capture-capable or remote-control processes. Nothing is forcibly closed.")
-    foreach ($x in $top) {
-        [void]$lines.Add(("[" + $x.Score + "] " + $x.Label + " :: " + $x.Type + " :: PID " + $x.Pid + " :: " + $x.Process))
-    }
-    if ($script:ScreenSignals.Count -gt $top.Count) { [void]$lines.Add("+ " + ($script:ScreenSignals.Count - $top.Count) + " more screen/capture-capable process signals") }
-    if ($ScreenGuardMode -eq "Pause") { [void]$lines.Add("Mode PAUSE: scan waits " + $ScreenGuardPauseSeconds + " seconds so the user can stop sharing manually.") }
-    if ($ScreenGuardMode -eq "Exit") { [void]$lines.Add("Mode EXIT: scan stops now because capture-capable software is present.") }
-    Write-CosmicBoxV17 "SCREEN PRIVACY GUARD" @($lines) "Yellow"
     foreach ($x in $top) {
         if ([int]$x.Score -ge 75) {
             Add-Finding -Object ($x.Label + " PID " + $x.Pid) -ObjectType "SCREEN_PRIVACY" -Score ([int]$x.Score) -Severity (Convert-ScoreToSeverity ([int]$x.Score)) -Class "screen_capture_context" -Evidence @("screen capture capable process is running", "process type: " + $x.Type, "privacy context only; not a cheat proof")
         }
     }
     if ($ScreenGuardMode -eq "Pause") {
+        Write-CosmicBoxV17 "SCREEN GUARD" @("Capture-capable software was detected. Pause mode is active.", "Stop recording or sharing manually, then wait for the scan to continue.") "Yellow"
         try { Start-Sleep -Seconds ([Math]::Max(3, [Math]::Min(90, $ScreenGuardPauseSeconds))) } catch {}
     }
     if ($ScreenGuardMode -eq "Exit") {
@@ -6849,7 +6830,7 @@ function Show-FinalVerdict {
 
 function Main {
     if ($SelfTest) { Test-SelfSyntax }
-    $script:Version = "17.0.0"
+    $script:Version = "18.0.0"
     $script:StartTime = Get-Date
     $script:UiNoProgress = $true
     $script:UiWidth = [Math]::Max(100, [Math]::Min(150, $UiWidth))
@@ -6871,13 +6852,11 @@ function Main {
     $script:AdminMethod = [string]$adminProbe.Method
     $script:AdminChecks = [string]$adminProbe.Checks
     Show-Banner
-    if ($OpenReport) { Write-StarV17 "  OpenReport accepted for compatibility; permanent reports stay disabled." "Yellow" }
+    if ($OpenReport) { $null = $true }
     Start-UiPhase "Screen privacy" "detecting active recorder, screen-share and remote-control processes"
     Analyze-ScreenPrivacyGuardV17
     Start-UiPhase "Brain model" "tokens, trusted vendors and false-positive gate"
     Initialize-BrainTokens
-    Write-StarV17 ("  Mode: Fast=" + [bool]$Fast + " Deep=" + [bool]$Deep + " FullSystem=" + [bool]$FullSystem + " AllDrives=" + [bool]$AllDrives + " OnlyMinecraft=" + [bool]$OnlyMinecraft) "White"
-    Write-StarV17 ("  Hard limit: " + $MaxMinutes + " min | candidates: " + $MaxCandidates + " | strict evidence: " + [bool]$StrictEvidence) "DarkGray"
     Start-UiPhase "Live execution" "processes, command lines, parent chains, java and modules"
     Analyze-RunningProcesses
     Analyze-ProcessModules
