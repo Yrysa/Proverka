@@ -63,7 +63,8 @@ function Prepare-Environment {
 
 function Download-Scanner {
     Write-Step "Downloading scanner from GitHub"
-    Invoke-WebRequest -Uri $scannerUrl -OutFile $scannerPath -UseBasicParsing
+    $url = $scannerUrl + "?nocache=" + [Guid]::NewGuid().ToString("N")
+    Invoke-WebRequest -Uri $url -OutFile $scannerPath -UseBasicParsing
     if (-not (Test-Path $scannerPath)) { throw "Scanner was not downloaded." }
 }
 
@@ -88,39 +89,54 @@ function Download-OptionalDatabase {
 
 function Repair-ScannerRuntimeCopy {
     Write-Step "Preparing runtime copy without changing scanner UI"
-    $text = Get-Content -LiteralPath $scannerPath -Raw -ErrorAction Stop
+    $lines = [System.Collections.Generic.List[string]]::new()
+    [void]$lines.AddRange([string[]](Get-Content -LiteralPath $scannerPath -ErrorAction Stop))
 
-    $safeBanner = @'
-function Show-Banner {
-    if (-not $Quiet) { Clear-Host }
-    $width = 100
-    Write-UiRule DarkRed $width
-    $banner = @"
-  __   ______  __   __  ____     ____ _   _ _____ ____ _  _______ ____
-  \ \ / /  _ \ \ \ / / / ___|   / ___| | | | ____/ ___| |/ / ____|  _ \
-   \ V /| |_) | \ V /  \___ \  | |   | |_| |  _|| |   | ' /|  _| | |_) |
-    | | |  _ <   | |    ___) | | |___|  _  | |__| |___| . \| |___|  _ <
-    |_| |_| \_\  |_|   |____/   \____|_| |_|_____\____|_|\_\_____|_| \_\
-"@
-    foreach ($line in ($banner -split "`r?`n")) {
-        if ($line.Length -gt 0) { Write-UiText $line Red }
+    $start = -1
+    $next = -1
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($lines[$i] -match '^function\s+Show-Banner\s*\{') { $start = $i; break }
     }
-    Write-UiText ""
-    Write-UiText ("  Advanced v{0} | Minecraft / Java forensic scanner" -f $script:ScriptVersion) White
-    Write-UiText "  Premium console UI | progress stages | TXT / JSON / HTML report" DarkGray
-    Write-UiRule DarkRed $width
-    Write-UiText ""
-}
-'@
+    if ($start -ge 0) {
+        for ($j = $start + 1; $j -lt $lines.Count; $j++) {
+            if ($lines[$j] -match '^function\s+Show-StageProgress\s*\{') { $next = $j; break }
+        }
+    }
 
-    $pattern = '(?s)function Show-Banner\s*\{.*?\r?\n\}\s*\r?\n\s*function Show-StageProgress'
-    if ([regex]::IsMatch($text, $pattern)) {
-        $text = [regex]::Replace($text, $pattern, ($safeBanner + "`r`nfunction Show-StageProgress"), 1)
-        Set-Content -LiteralPath $scannerPath -Value $text -Encoding UTF8
-        Write-Step "Runtime banner repaired safely" DarkGray
-    } else {
+    if ($start -lt 0 -or $next -lt 0) {
         Write-Step "Banner block was not found for repair" Yellow
+        return
     }
+
+    $safe = @(
+        'function Show-Banner {',
+        '    if (-not $Quiet) { Clear-Host }',
+        '    $width = 100',
+        '    Write-UiRule DarkRed $width',
+        '    $bannerLines = @(',
+        '        ''  __   ______  __   __  ____     ____ _   _ _____ ____ _  _______ ____  ''',
+        '        ''  \ \ / /  _ \ \ \ / / / ___|   / ___| | | | ____/ ___| |/ / ____|  _ \ ''',
+        '        ''   \ V / | |_) | \ V /  \___ \  | |   | |_| |  _| | |   |  / |  _| | |_) |''',
+        '        ''    | |  |  _ <   | |    ___) | | |___|  _  | |___| |___| . \ | |___|  _ < ''',
+        '        ''    |_|  |_| \_\  |_|   |____/   \____|_| |_|_____\____|_|\_\|_____|_| \_\''',
+        '    )',
+        '    foreach ($line in $bannerLines) { Write-UiText $line Red }',
+        '    Write-UiText ""',
+        '    Write-UiText ("  Advanced v{0} | Minecraft / Java forensic scanner" -f $script:ScriptVersion) White',
+        '    Write-UiText "  Premium console UI | progress stages | TXT / JSON / HTML report" DarkGray',
+        '    Write-UiRule DarkRed $width',
+        '    Write-UiText ""',
+        '}',
+        ''
+    )
+
+    $out = New-Object System.Collections.Generic.List[string]
+    for ($a = 0; $a -lt $start; $a++) { [void]$out.Add($lines[$a]) }
+    foreach ($s in $safe) { [void]$out.Add($s) }
+    for ($b = $next; $b -lt $lines.Count; $b++) { [void]$out.Add($lines[$b]) }
+
+    Set-Content -LiteralPath $scannerPath -Value $out -Encoding UTF8
+    Write-Step "Runtime banner repaired safely" DarkGray
 }
 
 function Start-Scanner {
