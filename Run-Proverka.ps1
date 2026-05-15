@@ -12,7 +12,7 @@ param(
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = "Continue"
 
-$runnerVersion = "1.20.77"
+$runnerVersion = "1.20.77-patch4"
 $tempDir = Join-Path $env:TEMP ("PROVERKA_RUN_" + [Guid]::NewGuid().ToString("N"))
 $scannerPath = Join-Path $tempDir "Proverka.ps1"
 $scannerUrl = "https://raw.githubusercontent.com/Yrysa/Proverka/main/Proverka.ps1"
@@ -26,6 +26,7 @@ function Show-RunnerBanner {
     Write-Host ""
     Write-Host "+============================================================+" -ForegroundColor DarkRed
     Write-Host "|                  YRYS CHECKER RUNNER                      |" -ForegroundColor Red
+    Write-Host ("|                  build " + $runnerVersion.PadRight(38) + "|") -ForegroundColor White
     Write-Host "|        dependency bootstrap + premium UI launcher          |" -ForegroundColor White
     Write-Host "|        scanner UI is preserved, not simplified             |" -ForegroundColor DarkGray
     Write-Host "+============================================================+" -ForegroundColor DarkRed
@@ -89,22 +90,23 @@ function Download-OptionalDatabase {
 
 function Repair-ScannerRuntimeCopy {
     Write-Step "Preparing runtime copy without changing scanner UI"
-    $lines = [System.Collections.Generic.List[string]]::new()
-    [void]$lines.AddRange([string[]](Get-Content -LiteralPath $scannerPath -ErrorAction Stop))
+    $lines = New-Object System.Collections.Generic.List[string]
+    $rawLines = Get-Content -LiteralPath $scannerPath -ErrorAction Stop
+    foreach ($line in $rawLines) { [void]$lines.Add([string]$line) }
 
     $start = -1
     $next = -1
     for ($i = 0; $i -lt $lines.Count; $i++) {
-        if ($lines[$i] -match '^function\s+Show-Banner\s*\{') { $start = $i; break }
+        if ($lines[$i] -match '^\s*function\s+Show-Banner\s*\{') { $start = $i; break }
     }
     if ($start -ge 0) {
         for ($j = $start + 1; $j -lt $lines.Count; $j++) {
-            if ($lines[$j] -match '^function\s+Show-StageProgress\s*\{') { $next = $j; break }
+            if ($lines[$j] -match '^\s*function\s+Show-StageProgress\s*\{') { $next = $j; break }
         }
     }
 
     if ($start -lt 0 -or $next -lt 0) {
-        Write-Step "Banner block was not found for repair" Yellow
+        Write-Step "Banner block was not found for repair. start=$start next=$next" Yellow
         return
     }
 
@@ -114,13 +116,13 @@ function Repair-ScannerRuntimeCopy {
         '    $width = 100',
         '    Write-UiRule DarkRed $width',
         '    $bannerLines = @(',
-        '        ''  __   ______  __   __  ____     ____ _   _ _____ ____ _  _______ ____  ''',
-        '        ''  \ \ / /  _ \ \ \ / / / ___|   / ___| | | | ____/ ___| |/ / ____|  _ \ ''',
-        '        ''   \ V / | |_) | \ V /  \___ \  | |   | |_| |  _| | |   |  / |  _| | |_) |''',
-        '        ''    | |  |  _ <   | |    ___) | | |___|  _  | |___| |___| . \ | |___|  _ < ''',
-        '        ''    |_|  |_| \_\  |_|   |____/   \____|_| |_|_____\____|_|\_\|_____|_| \_\''',
+        '        "  __   ______  __   __  ____     ____ _   _ _____ ____ _  _______ ____  "',
+        '        "  YY  Y /  _ Y  YY / / ___Y   / ___Y Y Y Y ____/ ___Y Y/ / ____Y  _ Y "',
+        '        "   Y  / | |_) |  Y  /  Y___ Y  | |   | |_| |  _| | |   |   /|  _| | |_) |"',
+        '        "    | |  |  _ <   | |    ___) | | |___|  _  | |___| |___| . Y| |___|  _ < "',
+        '        "    |_|  |_| Y_Y  |_|   |____/   Y____|_| |_|_____Y____|_|Y_Y_____|_| Y_Y"',
         '    )',
-        '    foreach ($line in $bannerLines) { Write-UiText $line Red }',
+        '    foreach ($line in $bannerLines) { Write-UiText ($line -replace "Y", "\\") Red }',
         '    Write-UiText ""',
         '    Write-UiText ("  Advanced v{0} | Minecraft / Java forensic scanner" -f $script:ScriptVersion) White',
         '    Write-UiText "  Premium console UI | progress stages | TXT / JSON / HTML report" DarkGray',
@@ -136,7 +138,7 @@ function Repair-ScannerRuntimeCopy {
     for ($b = $next; $b -lt $lines.Count; $b++) { [void]$out.Add($lines[$b]) }
 
     Set-Content -LiteralPath $scannerPath -Value $out -Encoding UTF8
-    Write-Step "Runtime banner repaired safely" DarkGray
+    Write-Step "Runtime banner repaired safely. lines $start..$($next - 1) replaced" Green
 }
 
 function Start-Scanner {
