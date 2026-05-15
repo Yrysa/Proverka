@@ -90,16 +90,21 @@ function Repair-ScannerRuntimeCopy {
     Write-Step "Preparing runtime copy without changing scanner UI"
     $text = Get-Content -LiteralPath $scannerPath -Raw -ErrorAction Stop
 
-    $old = @'
+    $safeBanner = @'
 function Show-Banner {
     if (-not $Quiet) { Clear-Host }
     $width = 100
     Write-UiRule DarkRed $width
-    Write-UiText "  __   ______  __   __  ____     ____ _   _ _____ ____ _  _______ ____  " Red
-    Write-UiText "  \ \ / /  _ \ \ \ / / / ___|   / ___| | | | ____/ ___| |/ / ____|  _ \ " Red
-    Write-UiText "   \ V /| |_) | \ V /  \___ \  | |   | |_| |  _|| |   | ' /|  _| | |_) |" Red
-    Write-UiText "    | | |  _ <   | |    ___) | | |___|  _  | |__| |___| . \| |___|  _ < " Red
-    Write-UiText "    |_| |_| \_\  |_|   |____/   \____|_| |_|_____\____|_|\_\_____|_| \_\" Red
+    $banner = @"
+  __   ______  __   __  ____     ____ _   _ _____ ____ _  _______ ____
+  \ \ / /  _ \ \ \ / / / ___|   / ___| | | | ____/ ___| |/ / ____|  _ \
+   \ V /| |_) | \ V /  \___ \  | |   | |_| |  _|| |   | ' /|  _| | |_) |
+    | | |  _ <   | |    ___) | | |___|  _  | |__| |___| . \| |___|  _ <
+    |_| |_| \_\  |_|   |____/   \____|_| |_|_____\____|_|\_\_____|_| \_\
+"@
+    foreach ($line in ($banner -split "`r?`n")) {
+        if ($line.Length -gt 0) { Write-UiText $line Red }
+    }
     Write-UiText ""
     Write-UiText ("  Advanced v{0} | Minecraft / Java forensic scanner" -f $script:ScriptVersion) White
     Write-UiText "  Premium console UI | progress stages | TXT / JSON / HTML report" DarkGray
@@ -108,27 +113,13 @@ function Show-Banner {
 }
 '@
 
-    $new = @'
-function Show-Banner {
-    if (-not $Quiet) { Clear-Host }
-    $width = 100
-    Write-UiRule DarkRed $width
-    Write-UiText '  __   ______  __   __  ____     ____ _   _ _____ ____ _  _______ ____  ' Red
-    Write-UiText '  \ \ / /  _ \ \ \ / / / ___|   / ___| | | | ____/ ___| |/ / ____|  _ \ ' Red
-    Write-UiText '   \ V /| |_) | \ V /  \___ \  | |   | |_| |  _|| |   | '' /|  _| | |_) |' Red
-    Write-UiText '    | | |  _ <   | |    ___) | | |___|  _  | |__| |___| . \| |___|  _ < ' Red
-    Write-UiText '    |_| |_| \_\  |_|   |____/   \____|_| |_|_____\____|_|\_\_____|_| \_\' Red
-    Write-UiText ''
-    Write-UiText ("  Advanced v{0} | Minecraft / Java forensic scanner" -f $script:ScriptVersion) White
-    Write-UiText '  Premium console UI | progress stages | TXT / JSON / HTML report' DarkGray
-    Write-UiRule DarkRed $width
-    Write-UiText ''
-}
-'@
-
-    if ($text.Contains($old)) {
-        $text = $text.Replace($old, $new)
+    $pattern = '(?s)function Show-Banner\s*\{.*?\r?\n\}\s*\r?\n\s*function Show-StageProgress'
+    if ([regex]::IsMatch($text, $pattern)) {
+        $text = [regex]::Replace($text, $pattern, ($safeBanner + "`r`nfunction Show-StageProgress"), 1)
         Set-Content -LiteralPath $scannerPath -Value $text -Encoding UTF8
+        Write-Step "Runtime banner repaired safely" DarkGray
+    } else {
+        Write-Step "Banner block was not found for repair" Yellow
     }
 }
 
